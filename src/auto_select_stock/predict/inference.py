@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -18,6 +19,16 @@ def load_model(
     except TypeError:
         payload = torch.load(checkpoint_path, map_location=target_device)
     cfg: TrainConfig = payload["config"]
+    if not hasattr(cfg, "target_mode"):
+        cfg.target_mode = "close"
+    if not hasattr(cfg, "weight_decay"):
+        cfg.weight_decay = 0.0
+    if not hasattr(cfg, "grad_clip"):
+        cfg.grad_clip = 0.0
+    if not hasattr(cfg, "lambda_reg"):
+        cfg.lambda_reg = 1.0
+    if not hasattr(cfg, "lambda_cls"):
+        cfg.lambda_cls = 1.0
     feature_columns = cfg.price_columns + cfg.financial_columns
     state_dict = payload["model_state"]
     d_model = state_dict["input_proj.weight"].shape[0]
@@ -47,7 +58,7 @@ def load_model(
         dim_feedforward=dim_feedforward,
         dropout=dropout,
     )
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model.to(target_device)
     model.eval()
     scaler = payload.get("scaler")
@@ -112,8 +123,22 @@ class PricePredictor:
         context = normed[-seq_len:]
         x = torch.tensor(context, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            pred_seq = self.model(x)[0, -1].item()
-        predicted_price = pred_seq * scaler_std[self.close_idx] + scaler_mean[self.close_idx]
+            pred_seq = self.model(x)[0].detach().cpu().numpy()
+
+        # Handle batch dimension consistently; we expect shape (batch, seq_len).
+        if pred_seq.ndim == 2:
+            pred_last = float(pred_seq[0, -1])
+        elif pred_seq.ndim == 1:
+            pred_last = float(pred_seq[-1])
+        else:
+            pred_last = float(np.array(pred_seq).reshape(-1)[-1])
+
+        mode = getattr(self.cfg, "target_mode", "close")
+        if mode == "log_return":
+            last_close = float(feats[-1, self.close_idx])
+            predicted_price = last_close * math.exp(pred_last)
+        else:
+            predicted_price = pred_last * scaler_std[self.close_idx] + scaler_mean[self.close_idx]
         return float(predicted_price)
 
 

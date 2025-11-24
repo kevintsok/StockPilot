@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 from torch import nn
@@ -72,6 +72,7 @@ class PriceTransformer(nn.Module):
         self.pe = PositionalEncoding(d_model=d_model, dropout=dropout)
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.head = nn.Linear(d_model, 1)
+        self.cls_head = nn.Linear(d_model, 1)
         self._cached_mask: Optional[torch.Tensor] = None
 
     def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
@@ -81,15 +82,16 @@ class PriceTransformer(nn.Module):
             self._cached_mask = mask
         return self._cached_mask
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # x shape: (batch, seq_len, input_dim)
         x = self.input_proj(x)  # (batch, seq_len, d_model)
         x = x.transpose(0, 1)  # (seq_len, batch, d_model)
         x = self.pe(x)
         mask = self._causal_mask(seq_len=x.size(0), device=x.device)
         encoded = self.encoder(x, mask=mask)  # (seq_len, batch, d_model)
-        preds = self.head(encoded).squeeze(-1)  # (seq_len, batch)
-        return preds.transpose(0, 1)  # (batch, seq_len)
+        reg = self.head(encoded).squeeze(-1)  # (seq_len, batch)
+        cls = self.cls_head(encoded).squeeze(-1)  # (seq_len, batch)
+        return reg.transpose(0, 1), cls.transpose(0, 1)  # (batch, seq_len)
 
 
 @dataclass
@@ -99,12 +101,18 @@ class TrainConfig:
     batch_size: int = 16
     epochs: int = 20
     lr: float = 1e-3
+    weight_decay: float = 1e-4
+    grad_clip: float = 1.0
     eval_every: int = 1
     device: Optional[str] = None
     num_workers: int = 0
     train_ratio: float = 0.8
+    date_windows: List[str] = field(default_factory=list)
     price_columns: List[str] = field(default_factory=lambda: PRICE_FEATURE_COLUMNS.copy())
     financial_columns: Optional[List[str]] = None
+    target_mode: str = "log_return"  # "log_return" or "close"
+    lambda_reg: float = 1000.0
+    lambda_cls: float = 1
     save_path: Path = MODEL_DIR / "price_transformer.pt"
     experiment_name: str = "experiment"
     checkpoint_steps: int = 10000
@@ -115,4 +123,5 @@ class TrainConfig:
     wandb_run_name: Optional[str] = None
     wandb_tags: List[str] = field(default_factory=list)
     wandb_mode: Optional[str] = None  # e.g. "offline"
+    profile: bool = False
 __all__ = ["PriceTransformer", "TrainConfig"]

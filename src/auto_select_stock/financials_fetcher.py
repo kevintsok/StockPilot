@@ -9,6 +9,7 @@ import akshare as ak
 import pandas as pd
 
 from .config import DATA_DIR
+from .financial_dates import infer_publish_dates
 from .storage import load_financial, save_financial
 from .storage import financial_date_range
 
@@ -117,25 +118,30 @@ def _tidy_financial_abstract(wide: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if ocf_source:
         tidy["operating_cashflow_growth"] = tidy["operating_cashflow_per_share"].pct_change().fillna(0.0) * 100.0
 
-    cols = ["date"] + [c for c in tidy.columns if c != "date"]
+    tidy["publish_date"] = infer_publish_dates(tidy["date"])
+    tidy["report_date"] = tidy["publish_date"]
+    cols = ["date", "publish_date", "report_date"] + [c for c in tidy.columns if c not in {"date", "publish_date", "report_date"}]
     return tidy[cols]
 
 
 def _tidy_indicator(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """Fallback tidy for indicator endpoint when abstract fails."""
-    rename_map = {"报表期": "date", "报告期": "date", "报告日期": "date", "公告日期": "date"}
+    rename_map = {"报表期": "date", "报告期": "date", "报告日期": "date", "公告日期": "publish_date"}
     df = df.rename(columns=rename_map)
     if "date" not in df.columns:
         raise RuntimeError(f"Indicator data missing date column for {symbol}")
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "publish_date" in df.columns:
+        df["publish_date"] = pd.to_datetime(df["publish_date"], errors="coerce")
+    raw_report_date = pd.to_datetime(df.get("REPORT_DATE"), errors="coerce") if "REPORT_DATE" in df.columns else None
     df = df.dropna(subset=["date"])
     df.sort_values("date", inplace=True)
     df.reset_index(drop=True, inplace=True)
     if df.empty:
         raise RuntimeError(f"No dated indicator rows for {symbol}")
     for col in df.columns:
-        if col == "date":
+        if col in {"date", "publish_date"}:
             continue
         df[col] = _clean_numeric(df[col])
     _pick_first(df, "roe", ["净资产收益率", "净资产收益率(%)", "净资产收益率-加权", "净资产收益率-摊薄"])
@@ -146,7 +152,9 @@ def _tidy_indicator(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     ocf_source = _pick_first(df, "operating_cashflow_per_share", ["每股经营性现金流", "每股经营性现金流(元)", "每股经营活动产生的现金流量净额"])
     if ocf_source:
         df["operating_cashflow_growth"] = df["operating_cashflow_per_share"].pct_change().fillna(0.0) * 100.0
-    cols = ["date"] + [c for c in df.columns if c != "date"]
+    df["publish_date"] = infer_publish_dates(df["date"], raw_report_date, df.get("publish_date"), df.get("ANN_DATE"))
+    df["report_date"] = df["publish_date"]
+    cols = ["date", "publish_date", "report_date"] + [c for c in df.columns if c not in {"date", "publish_date", "report_date"}]
     return df[cols]
 
 
@@ -158,8 +166,11 @@ def _tidy_indicator_em(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if df is None or df.empty:
         raise RuntimeError(f"No Eastmoney indicator data for {symbol}")
     df = df.copy()
-    df = df.rename(columns={"REPORT_DATE": "date"})
+    raw_report_date = pd.to_datetime(df.get("REPORT_DATE"), errors="coerce")
+    df = df.rename(columns={"REPORT_DATE": "date", "NOTICE_DATE": "publish_date", "PUBLISH_DATE": "publish_date"})
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "publish_date" in df.columns:
+        df["publish_date"] = pd.to_datetime(df["publish_date"], errors="coerce")
     df = df.dropna(subset=["date"])
     df.sort_values("date", inplace=True)
     df.reset_index(drop=True, inplace=True)
@@ -178,7 +189,15 @@ def _tidy_indicator_em(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         df["operating_cashflow_growth"] = (
             df["operating_cashflow_per_share"].pct_change().fillna(0.0) * 100.0
         )
-    cols = ["date"] + [c for c in df.columns if c != "date"]
+    df["publish_date"] = infer_publish_dates(
+        df["date"],
+        raw_report_date,
+        df.get("publish_date"),
+        df.get("NOTICE_DATE"),
+        df.get("ANN_DATE"),
+    )
+    df["report_date"] = df["publish_date"]
+    cols = ["date", "publish_date", "report_date"] + [c for c in df.columns if c not in {"date", "publish_date", "report_date"}]
     return df[cols]
 
 

@@ -73,9 +73,10 @@ def _ensure_financial_columns(conn: sqlite3.Connection, columns: list[str]) -> N
     for col in columns:
         if col in {"symbol", "date"} or col in existing:
             continue
+        col_type = "TEXT" if col == "publish_date" or col.lower().endswith("date") else "REAL"
         try:
             escaped = col.replace('"', '""')
-            conn.execute(f'ALTER TABLE financial ADD COLUMN "{escaped}" REAL')
+            conn.execute(f'ALTER TABLE financial ADD COLUMN "{escaped}" {col_type}')
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -170,6 +171,8 @@ def save_financial(symbol: str, df: pd.DataFrame, base_dir: Optional[Path] = Non
     conn = _connect(base_dir)
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+    if "publish_date" in df.columns:
+        df["publish_date"] = pd.to_datetime(df["publish_date"]).dt.date.astype(str)
     value_cols = [c for c in df.columns if c != "date"]
     _ensure_financial_columns(conn, value_cols)
     escaped_cols = [col.replace('"', '""') for col in value_cols]

@@ -1,32 +1,31 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Root assets: `README.md` (usage), `requirements.txt` (Python deps), `start_ops_dashboard.sh` (control panel launcher), data outputs under `data/`, `models/`, `reports/`, and logs under `logs/`.
-- Core code lives in `src/auto_select_stock/`: `cli.py` (entrypoint), `data_fetcher.py` and `financials_fetcher.py` (market/financial ingestion), `storage.py` (NumPy I/O), `scoring.py` + `llm/` (LLM provider adapters), `torch_model.py` (Transformer training/inference), `html_report.py` and `dashboard.py` (report rendering), `ops_dashboard.py` (ops UI).
-- Config defaults and overrideable paths are in `config.py` (`AUTO_SELECT_*` env vars).
+- Root: `README.md` (usage), `requirements.txt` (deps), `start_ops_dashboard.sh` (ops UI), `data/` `models/` `reports/` `logs/` for artifacts; keep `PYTHONPATH=./src`.
+- Core package `src/auto_select_stock/`: `cli.py` (entrypoint), `config.py` (paths/envs), `data_fetcher.py` + `financials_fetcher.py` (ingestion), `storage.py` (SQLite/NumPy I/O), `scoring.py` + `llm/` (LLM adapters), `torch_model.py` + `predict/` (training, inference, backtest), `dashboard.py` + `html_report.py` (HTML outputs), `ops_dashboard.py` (control panel).
 
 ## Build, Test, and Development Commands
-- Install deps: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`.
-- Run CLI (from repo root): `python -m auto_select_stock.cli fetch-all --start 2018-01-01` to bootstrap data; `python -m auto_select_stock.cli update-daily` for increments.
-- Score and report (dummy LLM is deterministic and requires no keys): `python -m auto_select_stock.cli score --provider dummy --top 10`; render HTML: `python -m auto_select_stock.cli render --provider dummy --top 50 --output reports/undervalued.html`.
-- Model workflows: `python -m auto_select_stock.cli train-transformer --device cuda` to train; `python -m auto_select_stock.cli predict-transformer 600000 --checkpoint models/price_transformer.pt` to infer.
-- Ops dashboard: `./start_ops_dashboard.sh` (sets `PYTHONPATH` and starts at http://127.0.0.1:8000).
+- Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`; export `PYTHONPATH=./src:${PYTHONPATH:-}`.
+- Data: `python -m auto_select_stock.cli fetch-all --start 2018-01-01 [--limit N]`; incremental: `python -m auto_select_stock.cli update-daily`.
+- LLM scoring/report: `python -m auto_select_stock.cli score --provider dummy --top 20`; render: `python -m auto_select_stock.cli render --provider dummy --top 50 --output reports/undervalued.html`.
+- Modeling: `python -m auto_select_stock.cli train-transformer --seq-len 60 --epochs 1 --device cpu` (smoke); predict: `python -m auto_select_stock.cli predict-transformer 600000 --checkpoint models/price_transformer.pt`.
+- Ops dashboard: `./start_ops_dashboard.sh` (serves at http://127.0.0.1:8000; sets envs).
 
 ## Coding Style & Naming Conventions
-- Python 3; follow PEP 8 with 4-space indents and descriptive snake_case names; keep public functions typed (type hints are already present in most modules).
-- Prefer pure functions and small helpers; keep side effects at CLI/command boundaries.
-- Organize new providers under `llm/` and keep adapter interfaces consistent with `base.py`.
+- Python 3 with PEP 8 defaults; 4-space indents, snake_case for funcs/vars, lowercase module names; keep docstrings succinct.
+- Use type hints on public helpers; mirror the lazy-import pattern (see `_lazy_torch_import` in `cli.py`) for heavy deps.
+- Add new adapters under `llm/` following `base.py`; keep CLI flags descriptive and grouped by command.
 
 ## Testing Guidelines
-- No formal test suite yet; validate changes by running CLI flows above with `--provider dummy` and inspecting generated outputs in `reports/`.
-- For model changes, run a short epoch smoke test (`--epochs 1 --limit 20` on fetch) to confirm training still runs.
-- Capture failures or sample outputs in PR descriptions when adding new data paths or models.
+- No dedicated test suite yet; run the CLI flows above with `--provider dummy` and confirm artifacts under `reports/` and `logs/` are produced without errors.
+- For model changes, run a quick epoch on a small symbol subset (`--limit 30`, `--epochs 1`) to verify training loop and checkpoint writing.
+- When adding data transforms, validate one symbol end-to-end (`update-daily`, `train-transformer --epochs 1`, `predict-transformer`) and include commands/output notes in the PR.
 
 ## Commit & Pull Request Guidelines
-- Use imperative, scoped commit messages (e.g., `cli: add top-n filter`, `llm: handle rate limits`); one logical change per commit when possible.
-- PRs should include: summary of intent, main commands run for validation, any new env vars/config defaults, and screenshots/paths for generated HTML dashboards when relevant.
-- Link related issues/tasks and call out backward-incompatible changes (data schema, report format, model checkpoints).
+- Use short, imperative subjects with scope prefixes when helpful (e.g., `cli: add resume flag`, `predict: clamp logits`); keep one concern per commit.
+- PRs should state intent, list validation commands, mention new env vars or defaults, and attach paths or screenshots for generated dashboards/reports when applicable.
+- Call out breaking changes (data schema, checkpoint format, report columns) and note any manual migration steps.
 
 ## Security & Configuration Tips
-- Keep API keys (e.g., `OPENAI_API_KEY`) in env vars; never check them into the repo. Override paths with `AUTO_SELECT_STOCK_DATA_DIR`, `AUTO_SELECT_STOCK_REPORT_DIR`, `AUTO_SELECT_MODEL_DIR` when needed.
-- Large artifacts in `data/`, `models/`, `reports/` should stay out of version control; prefer `.gitignore` or external storage for datasets and checkpoints.
+- Keep secrets in env vars (`OPENAI_API_KEY`, `AUTO_SELECT_LLM_MODEL`, etc.); never commit keys. Override storage roots via `AUTO_SELECT_STOCK_DATA_DIR`, `AUTO_SELECT_STOCK_REPORT_DIR`, `AUTO_SELECT_MODEL_DIR`, `AUTO_SELECT_STOCK_PREPROCESSED_DIR`.
+- Large artifacts in `data/`, `models/`, and `reports/` should stay untracked; prefer external storage and only commit small samples needed for docs or tests.
