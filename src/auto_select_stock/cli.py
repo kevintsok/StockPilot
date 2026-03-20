@@ -18,6 +18,7 @@ from .dashboard import build_rows, render_dashboard
 from .html_report import render_report
 from .predict.backtest import BacktestConfig, filter_a_share_symbols, run_backtest, run_backtest_for_symbol, run_topk_strategy
 from .scoring import score_symbols
+from .screener import render_screener_html, screen_stocks, parse_nl_query
 from .storage import ensure_data_dir, list_symbols
 def _lazy_torch_import():
     # Delay heavy deps (torch) so fetch/update can run without GPU/torch installed.
@@ -201,6 +202,25 @@ def cmd_render_dashboard(args):
     output = Path(args.output) if args.output else REPORT_DIR / "dashboard.html"
     path = render_dashboard(rows, output=output)
     print(f"Dashboard written to {path} with {len(rows)} rows.")
+
+
+def cmd_screen_nl(args):
+    if getattr(args, "no_llm", False):
+        criteria = parse_nl_query(args.query)
+    else:
+        from .llm.nl_parser import parse_nl_query_with_llm
+        from .llm.openai_client import OpenAIClient
+
+        try:
+            llm_client = OpenAIClient(provider="minimax")
+            criteria = parse_nl_query_with_llm(args.query, llm_client)
+        except Exception as e:
+            print(f"[WARN] LLM解析失败，回退到正则解析: {e}")
+            criteria = parse_nl_query(args.query)
+    rows = screen_stocks(criteria, base_dir=DATA_DIR)
+    output = Path(args.output) if args.output else REPORT_DIR / "screener.html"
+    path = render_screener_html(rows, criteria, output)
+    print(f"Screener: {len(rows)} stocks matched. Output: {path}")
 
 
 def cmd_backtest_transformer(args):
@@ -452,6 +472,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--lookback-long", type=int, default=60, help="长周期涨跌幅天数")
     p_dash.add_argument("--output", default=None, help="输出路径，默认 reports/dashboard.html")
     p_dash.set_defaults(func=cmd_render_dashboard)
+
+    p_screen = sub.add_parser("screen-nl", help="中文自然语言选股，输出可排序 HTML")
+    p_screen.add_argument("query", help="筛选条件，例如：3个月内涨幅不超过+10%，ROE高于10%，换手率高于2%")
+    p_screen.add_argument("--output", default=None, help="输出路径，默认 reports/screener.html")
+    p_screen.add_argument("--no-llm", action="store_true", help="禁用 LLM，使用正则解析自然语言（默认使用 MiniMax LLM 解析）")
+    p_screen.set_defaults(func=cmd_screen_nl)
 
     p_backtest = sub.add_parser("backtest-transformer", help="使用训练好的 Transformer 做批量推理的策略回测")
     p_backtest.add_argument("symbols", nargs="*", help="指定股票代码，默认 data 目录下全部")

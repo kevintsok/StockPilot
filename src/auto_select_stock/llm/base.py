@@ -5,6 +5,16 @@ from ..stock_types import StockSnapshot, StockScore
 
 
 class LLMClient(ABC):
+    @property
+    @abstractmethod
+    def model(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def client(self) -> "OpenAI":  # type: ignore[name-defined]
+        raise NotImplementedError
+
     @abstractmethod
     def score(self, snapshot: StockSnapshot) -> StockScore:
         """

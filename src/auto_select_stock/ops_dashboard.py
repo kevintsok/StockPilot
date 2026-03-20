@@ -28,6 +28,7 @@ import requests
 from .config import DATA_DIR, PROJECT_ROOT, REPORT_DIR, PREPROCESSED_DIR
 from .dashboard import build_rows
 from .data_fetcher import list_all_symbols
+from .screener import ScreenCriteria, ScreenerRow, parse_nl_query, screen_stocks
 from .storage import DB_PATH, list_symbols, load_financial, load_stock_history
 
 
@@ -42,6 +43,52 @@ NAME_CACHE: Dict[str, object] = {"ts": 0.0, "map": {}}
 DASH_CACHE: Dict[str, object] = {"ts": 0.0, "data": None}
 REALTIME_CACHE: Dict[str, object] = {"ts": 0.0, "rows": None, "cols": None, "err": None}
 REALTIME_CACHE_FILE = DATA_DIR / "realtime_cache.json"
+SCREENER_CACHE: Dict[str, object] = {"ts": 0.0, "query": "", "criteria": None, "rows": None}
+
+
+def _criteria_to_str(criteria: ScreenCriteria) -> str:
+    """Convert ScreenCriteria to human-readable string."""
+    parts = [f"近{criteria.lookback_days}天"]
+    if criteria.min_pct_change is not None:
+        parts.append(f"涨幅>{criteria.min_pct_change}%")
+    if criteria.max_pct_change is not None:
+        parts.append(f"涨幅<{criteria.max_pct_change}%")
+    if criteria.min_roe is not None:
+        parts.append(f"ROE>{criteria.min_roe}%")
+    if criteria.min_eps is not None:
+        parts.append(f"EPS>{criteria.min_eps}")
+    if criteria.min_turnover_rate is not None:
+        parts.append(f"换手率>{criteria.min_turnover_rate}%")
+    if criteria.max_turnover_rate is not None:
+        parts.append(f"换手率<{criteria.max_turnover_rate}%")
+    return " | ".join(parts) or "全部股票"
+
+
+def _parse_criteria(query: str) -> ScreenCriteria:
+    """Parse natural language query to ScreenCriteria using LLM or regex fallback."""
+    try:
+        from .llm.nl_parser import parse_nl_query_with_llm
+        from .llm.openai_client import OpenAIClient
+
+        llm_client = OpenAIClient(provider="minimax")
+        return parse_nl_query_with_llm(query, llm_client)
+    except Exception:
+        return parse_nl_query(query)
+
+
+def _screener_rows(query: str) -> Dict[str, object]:
+    """Run screener query with 5-minute caching."""
+    now = time.time()
+    cached = SCREENER_CACHE
+    if cached.get("query") == query and cached.get("rows") is not None:
+        if now - float(cached.get("ts", 0.0)) < 300:
+            return {"rows": cached["rows"], "criteria": cached["criteria"]}
+    criteria = _parse_criteria(query)
+    rows = screen_stocks(criteria, base_dir=DATA_DIR)
+    SCREENER_CACHE.update({"ts": now, "query": query, "criteria": criteria, "rows": rows})
+    return {"rows": rows, "criteria": criteria}
+
+
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
     "Referer": "https://quote.eastmoney.com/",
@@ -843,6 +890,7 @@ HTML = """<!doctype html>
   <div class="tabs">
     <button id="tabbtn-data" class="btn-tab active" onclick="showTab('tab-data')">数据获取</button>
     <button id="tabbtn-dashboard" class="btn-tab" onclick="showTab('tab-dashboard')">看板</button>
+    <button id="tabbtn-screener" class="btn-tab" onclick="showTab('tab-screener')">选股</button>
     <button id="tabbtn-train" class="btn-tab" onclick="showTab('tab-train')">训练与推理</button>
     <button id="tabbtn-eval" class="btn-tab" onclick="showTab('tab-eval')">评估与回测</button>
   </div>
@@ -909,6 +957,9 @@ HTML = """<!doctype html>
         <div class="log" id="log_render_dashboard"></div>
       </div>
     </div>
+  </div>
+  <div id="tab-screener" class="tab">
+    <iframe id="screenerFrame" src="/screener" style="width:100%; height:900px; border:1px solid #1f2937; border-radius:10px; background:#0b1221;"></iframe>
   </div>
   <div id="tab-train" class="tab">
     <div class="grid">
@@ -1181,6 +1232,146 @@ HTML = """<!doctype html>
       }
     }
     refreshStats();
+  </script>
+</body>
+</html>
+"""
+
+SCREENER_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>选股 - 自然语言筛选</title>
+  <style>
+    :root { --bg:#0b1221; --card:#111827; --text:#e2e8f0; --accent:#58a6ff; --dim:#8b949e; --border:#1f2937; }
+    body { background:var(--bg); color:var(--text); font-family:"Inter","Arial",sans-serif; margin:0; padding:20px; }
+    h1 { margin:0 0 16px; font-size:20px; }
+    .controls { display:flex; gap:8px; margin-bottom:16px; align-items:center; }
+    input[type=text] { flex:1; padding:10px 14px; border-radius:10px; border:1px solid var(--border); background:#0b1221; color:var(--text); font-size:14px; }
+    .btn { padding:10px 18px; border-radius:10px; border:none; font-weight:600; cursor:pointer; background:#2563eb; color:#e2e8f0; }
+    .btn:hover { background:#1d4ed8; }
+    .btn[disabled] { opacity:0.6; cursor:not-allowed; }
+    .meta { color:var(--dim); font-size:13px; margin-bottom:12px; }
+    .meta span { margin-right:16px; }
+    .criteria-str { color:#86efac; }
+    .table-wrap { border:1px solid var(--border); border-radius:10px; overflow:auto; max-height:calc(100vh - 220px); }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th { text-align:left; padding:10px 12px; background:#1c2128; cursor:pointer; user-select:none; white-space:nowrap; position:sticky; top:0; }
+    th:hover { background:#2d333b; }
+    th .arrow { color:var(--accent); margin-left:4px; }
+    td { padding:8px 12px; border-bottom:1px solid #21262d; white-space:nowrap; }
+    tr:hover td { background:rgba(37,99,235,0.08); }
+    .num { text-align:right; font-variant-numeric:tabular-nums; }
+    .pos { color:#3fb950; }
+    .neg { color:#f85149; }
+    .zero { color:var(--text); }
+    th.sorted { color:var(--accent); }
+    .empty { text-align:center; color:var(--dim); padding:48px; }
+  </style>
+</head>
+<body>
+  <h1>自然语言选股</h1>
+  <div class="controls">
+    <input type="text" id="query-input" placeholder="例如: 3个月内涨幅不超过+10%" onkeydown="if(event.key==='Enter')runScreener()" />
+    <button id="btn-run" class="btn" onclick="runScreener()">开始选股</button>
+  </div>
+  <div class="meta" id="meta-row">
+    <span id="row-count"></span>
+    <span class="criteria-str" id="criteria-str"></span>
+  </div>
+  <div class="table-wrap">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th data-key="symbol" onclick="sort('symbol')">股票代码 <span class="arrow"></span></th>
+          <th data-key="name" onclick="sort('name')">名字 <span class="arrow"></span></th>
+          <th data-key="lookback_pct_change" onclick="sort('lookback_pct_change')">N天内涨幅(%) <span class="arrow"></span></th>
+          <th data-key="last_close" onclick="sort('last_close')">最新收盘价 <span class="arrow"></span></th>
+          <th data-key="roe" onclick="sort('roe')">ROE(%) <span class="arrow"></span></th>
+          <th data-key="eps" onclick="sort('eps')">EPS(元) <span class="arrow"></span></th>
+          <th data-key="turnover_rate" onclick="sort('turnover_rate')">换手率(%) <span class="arrow"></span></th>
+          <th data-key="last_date" onclick="sort('last_date')">最新日期 <span class="arrow"></span></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <script>
+    var dir = -1;
+    var lastKey = null;
+
+    function sort(key) {
+      if (lastKey === key) { dir *= -1; } else { dir = -1; lastKey = key; }
+      var tbl = document.getElementById('tbl');
+      var rows = Array.from(tbl.tBodies[0].rows);
+      var colIdx = Array.from(tbl.tHead.rows[0].cells).findIndex(function(c){ return c.dataset.key === key; });
+      if (colIdx < 0) return;
+      document.querySelectorAll('th').forEach(function(h){ h.classList.remove('sorted'); h.querySelector('.arrow').textContent = ''; });
+      var col = tbl.tHead.rows[0].cells[colIdx];
+      col.classList.add('sorted');
+      col.querySelector('.arrow').textContent = dir > 0 ? '▲' : '▼';
+      rows.sort(function(a, b) {
+        var A = a.children[colIdx].textContent.trim();
+        var B = b.children[colIdx].textContent.trim();
+        var NA = A.replace(/[^\\d.\\-]/g, '');
+        var NB = B.replace(/[^\\d.\\-]/g, '');
+        if (NA === '' && NB === '') return A > B ? dir : -dir;
+        if (NA === '') return 1;
+        if (NB === '') return -1;
+        return (parseFloat(NA) - parseFloat(NB)) * dir;
+      });
+      var tbody = tbl.tBodies[0];
+      rows.forEach(function(r){ tbody.appendChild(r); });
+    }
+
+    async function runScreener() {
+      var query = document.getElementById('query-input').value.trim();
+      if (!query) return;
+      var btn = document.getElementById('btn-run');
+      btn.disabled = true;
+      btn.textContent = '解析中...';
+      document.getElementById('row-count').textContent = '';
+      document.getElementById('criteria-str').textContent = '';
+      document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty">加载中...</td></tr>';
+      try {
+        var resp = await fetch('/screener', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({query: query})
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        var data = await resp.json();
+        var rows = data.rows || [];
+        var criteriaStr = data.criteria_str || '';
+        document.getElementById('row-count').textContent = '符合条件: ' + rows.length + ' 只';
+        document.getElementById('criteria-str').textContent = '条件: ' + criteriaStr;
+        var tbody = document.getElementById('tbody');
+        tbody.innerHTML = '';
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无符合条件的数据</td></tr>';
+        } else {
+          rows.forEach(function(r) {
+            var tr = document.createElement('tr');
+            var pct = r.lookback_pct_change;
+            var pctClass = pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'zero';
+            tr.innerHTML = '<td>' + r.symbol + '</td>' +
+              '<td>' + r.name + '</td>' +
+              '<td class="num ' + pctClass + '">' + (pct != null ? pct.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.last_close != null ? r.last_close.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.roe != null ? r.roe.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.eps != null ? r.eps.toFixed(3) : '-') + '</td>' +
+              '<td class="num">' + (r.turnover_rate != null ? r.turnover_rate.toFixed(2) : '-') + '</td>' +
+              '<td>' + (r.last_date || '-') + '</td>';
+            tbody.appendChild(tr);
+          });
+        }
+      } catch(e) {
+        document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty" style="color:#f85149;">错误: ' + e + '</td></tr>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始选股';
+      }
+    }
   </script>
 </body>
 </html>
@@ -1804,6 +1995,9 @@ class Handler(BaseHTTPRequestHandler):
                 err = f"failed to load detail for {symbol}: {exc}"
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, err)
             return
+        if self.path.startswith("/screener"):
+            self._write_ok(SCREENER_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self):
@@ -1866,6 +2060,42 @@ class Handler(BaseHTTPRequestHandler):
             msg = _wipe_dataset_cache()
             body = msg.encode("utf-8")
             self._write_ok(body, "text/plain; charset=utf-8")
+            return
+        if self.path == "/screener":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
+            try:
+                data = json.loads(raw.decode("utf-8"))
+                query = data.get("query", "")
+                result = _screener_rows(query)
+                rows_data = [
+                    {
+                        "symbol": r.symbol,
+                        "name": r.name,
+                        "lookback_pct_change": r.lookback_pct_change,
+                        "last_close": r.last_close,
+                        "last_date": r.last_date,
+                        "roe": r.roe,
+                        "eps": r.eps,
+                        "turnover_rate": r.turnover_rate,
+                    }
+                    for r in (result.get("rows") or [])
+                ]
+                criteria = result.get("criteria")
+                payload = {
+                    "rows": rows_data,
+                    "criteria_str": _criteria_to_str(criteria) if criteria else "",
+                }
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self._write_ok(body, "application/json; charset=utf-8")
+            except Exception as exc:  # noqa: BLE001
+                err = f"screener error: {exc}"
+                body = json.dumps({"error": err}, ensure_ascii=False).encode("utf-8")
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 

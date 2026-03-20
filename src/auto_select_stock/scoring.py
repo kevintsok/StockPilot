@@ -13,6 +13,10 @@ def select_llm_client(provider: str, model: Optional[str] = None):
         from .llm.openai_client import OpenAIClient
 
         return OpenAIClient(model=model)
+    if provider == "minimax":
+        from .llm.openai_client import OpenAIClient
+
+        return OpenAIClient(provider="minimax", model=model)
     if provider == "dummy":
         from .llm.dummy import DummyLLM
 

@@ -7,6 +7,14 @@ class DummyLLM(LLMClient):
     A deterministic scorer for quick tests without calling external APIs.
     """
 
+    @property
+    def model(self) -> str:
+        return "dummy"
+
+    @property
+    def client(self):
+        return None
+
     def score(self, snapshot: StockSnapshot) -> StockScore:
         vol_factor = snapshot.factors.get("vol_ratio_5", 1.0)
         momentum = snapshot.factors.get("pct_change_20", 0.0)
