@@ -23,6 +23,7 @@ def load_training_checkpoint(path: Path, device: torch.device) -> Dict[str, obje
         "epoch": payload.get("epoch", 0),
         "global_step": payload.get("global_step", 0),
         "samples_seen": payload.get("samples_seen", 0),
+        "batch_in_epoch": payload.get("batch_in_epoch", 0),
     }
 
 
@@ -53,6 +54,7 @@ def save_checkpoint(
     epoch: Optional[int] = None,
     global_step: Optional[int] = None,
     samples_seen: Optional[int] = None,
+    batch_in_epoch: Optional[int] = None,
 ) -> Path:
     target = path or cfg.save_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +67,7 @@ def save_checkpoint(
         "epoch": epoch,
         "global_step": global_step,
         "samples_seen": samples_seen,
+        "batch_in_epoch": batch_in_epoch,
     }
     torch.save(payload, target)
     print(f"Saved checkpoint to {target}")

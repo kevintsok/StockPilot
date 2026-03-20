@@ -119,6 +119,8 @@ class TrainConfig:
     resume_checkpoint: Optional[Path] = None
     preprocessed_dir: Path = PREPROCESSED_DIR
     keep_preprocessed_in_memory: bool = False
+    base_seed: Optional[int] = None
+    exact_resume: bool = True
     wandb_project: Optional[str] = None
     wandb_run_name: Optional[str] = None
     wandb_tags: List[str] = field(default_factory=list)

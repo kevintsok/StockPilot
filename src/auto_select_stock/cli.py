@@ -147,6 +147,8 @@ def cmd_train_transformer(args):
         experiment_name=args.experiment_name,
         checkpoint_steps=args.checkpoint_steps,
         resume_checkpoint=Path(args.resume_from) if args.resume_from else None,
+        base_seed=args.seed,
+        exact_resume=getattr(args, "exact_resume", True),
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         wandb_tags=args.wandb_tags or [],
@@ -412,6 +414,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--experiment-name", default="experiment", help="实验名，用于中间 checkpoint 命名")
     p_train.add_argument("--checkpoint-steps", type=int, default=1000, help="每隔多少个 global step 保存 checkpoint；<=0 关闭")
     p_train.add_argument("--resume-from", default=None, help="从已有 checkpoint 继续训练")
+    p_train.add_argument("--seed", type=int, default=None, help="训练随机种子（默认自动生成并写入 checkpoint）")
+    p_train.add_argument(
+        "--no-exact-resume",
+        dest="exact_resume",
+        action="store_false",
+        help="关闭批级精确续训（从下一 epoch 重跑）",
+    )
     p_train.add_argument("--wandb-project", default=None, help="wandb 项目名，填写后开启日志上报")
     p_train.add_argument("--wandb-run-name", default=None, help="wandb run 名称")
     p_train.add_argument("--wandb-tags", nargs="*", default=None, help="wandb tags 列表")
@@ -422,6 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="预处理后把特征缓存留在内存中，加速组装数据集（占用更高内存）",
     )
     p_train.add_argument("--profile", action="store_true", help="使用 torch.profiler 记录第 2 个 step（保存到 reports/）")
+    p_train.set_defaults(exact_resume=True)
     p_train.set_defaults(func=cmd_train_transformer)
 
     p_pred = sub.add_parser("predict-transformer", help="使用训练好的 Transformer 预测次日收盘价")

@@ -1,3 +1,4 @@
+import random
 import time
 import dataclasses
 from contextlib import contextmanager, nullcontext
@@ -142,6 +143,16 @@ def train_transformer(
 ) -> Dict[str, float]:
     device = _device(cfg)
     feature_columns = cfg.price_columns + cfg.financial_columns
+    if not hasattr(cfg, "exact_resume"):
+        cfg.exact_resume = True
+    if getattr(cfg, "base_seed", None) is None:
+        cfg.base_seed = int(time.time())
+    base_seed = cfg.base_seed
+    random.seed(base_seed)
+    np.random.seed(base_seed)
+    torch.manual_seed(base_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(base_seed)
     try:
         model = PriceTransformer(input_dim=len(feature_columns)).to(device)
     except RuntimeError as exc:
@@ -160,6 +171,8 @@ def train_transformer(
     start_epoch = 1
     global_step = 0
     samples_seen = 0
+    resume_epoch = 0
+    resume_batch_in_epoch = 0
 
     resume = resume_state
     if resume is None and cfg.resume_checkpoint:
@@ -175,11 +188,14 @@ def train_transformer(
         resume_metrics = resume.get("metrics") if isinstance(resume, dict) else {}
         if isinstance(resume_metrics, dict):
             best_val = resume_metrics.get("val_loss", best_val)
-        start_epoch = int(resume.get("epoch", 0)) + 1
+        resume_epoch = int(resume.get("epoch", 0))
+        resume_batch_in_epoch = int(resume.get("batch_in_epoch", 0) or 0)
+        start_epoch = resume_epoch + 1
+        if cfg.exact_resume and resume_batch_in_epoch > 0:
+            start_epoch = max(1, resume_epoch)
         global_step = int(resume.get("global_step", 0))
         samples_seen = int(resume.get("samples_seen", 0))
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers)
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
     test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers) if test_ds else None
 
@@ -194,13 +210,40 @@ def train_transformer(
     profile_trace_path = REPORT_DIR / profile_name
 
     train_start = time.time()
+    resume_pending = bool(cfg.exact_resume and resume is not None and resume_batch_in_epoch > 0)
     for epoch in range(start_epoch, cfg.epochs + 1):
         epoch_start = time.perf_counter()
         model.train()
         running_loss = 0.0
         steps = 0
+        generator = torch.Generator()
+        generator.manual_seed(base_seed + epoch)
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            num_workers=cfg.num_workers,
+            generator=generator,
+        )
         progress, total_batches = _progress_iterator(train_loader, epoch)
-        for batch_idx, (x, y_reg, y_cls) in enumerate(progress, 1):
+        progress_iter = iter(progress)
+
+        skip_batches = resume_batch_in_epoch if resume_pending and epoch == start_epoch else 0
+        if skip_batches and skip_batches >= total_batches:
+            print(f"[Resume] epoch {epoch} already completed ({skip_batches}/{total_batches} batches); advancing to next epoch")
+            resume_pending = False
+            continue
+        if skip_batches:
+            print(f"[Resume] skipping {skip_batches} batches in epoch {epoch} (exact resume)")
+            for _ in range(skip_batches):
+                try:
+                    next(progress_iter)
+                except StopIteration:
+                    break
+            resume_pending = False
+        start_batch_idx = skip_batches + 1
+
+        for batch_idx, (x, y_reg, y_cls) in enumerate(progress_iter, start_batch_idx):
             batch_start = time.time()
             x = x.to(device)
             y_reg = y_reg.to(device)
@@ -288,6 +331,7 @@ def train_transformer(
                     epoch=epoch,
                     global_step=global_step,
                     samples_seen=samples_seen,
+                    batch_in_epoch=batch_idx,
                 )
 
         train_loss = running_loss / max(1, steps)
@@ -375,6 +419,7 @@ def train_from_symbols(
     )
     resume_state: Optional[Dict[str, object]] = None
     resume_scaler: Optional[Dict[str, np.ndarray]] = None
+    resume_cfg: Optional[TrainConfig] = None
     if cfg.resume_checkpoint:
         print(f"[Resume] loading checkpoint {cfg.resume_checkpoint}")
         resume_state = load_training_checkpoint(cfg.resume_checkpoint, _device(cfg))
@@ -388,6 +433,19 @@ def train_from_symbols(
             cfg.weight_decay = getattr(resume_cfg, "weight_decay", cfg.weight_decay)
             cfg.grad_clip = getattr(resume_cfg, "grad_clip", cfg.grad_clip)
         resume_scaler = resume_state.get("scaler")  # type: ignore[assignment]
+    if getattr(cfg, "base_seed", None) is None:
+        cfg.base_seed = getattr(resume_cfg, "base_seed", None) if resume_cfg else None
+    if cfg.base_seed is None:
+        cfg.base_seed = int(time.time())
+    if not hasattr(cfg, "exact_resume"):
+        cfg.exact_resume = getattr(resume_cfg, "exact_resume", True) if resume_cfg else True
+    base_seed = cfg.base_seed
+    random.seed(base_seed)
+    np.random.seed(base_seed)
+    torch.manual_seed(base_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(base_seed)
+    print(f"[Seed] base_seed={base_seed} exact_resume={cfg.exact_resume}")
     scaler_for_windows = resume_scaler if len(parsed_windows) <= 1 else None
     if resume_scaler is not None and len(parsed_windows) > 1:
         print("[Train] Multiple date windows detected; ignoring resume scaler to recompute per window.")
