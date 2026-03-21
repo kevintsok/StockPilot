@@ -94,6 +94,16 @@ python -m auto_select_stock.ops_dashboard  # http://127.0.0.1:8000
 - `run_topk_strategy()` - daily batch inference, rank by predicted return, buy top-K only
 - Both support cost/slippage modeling and turnover tracking
 
+### Multi-Strategy Backtest (`predict/strategies/`)
+New in v0.0.2: JSON-driven strategy system with shared signal collection.
+- `base.py` - `Signal` dataclass + `BaseStrategy` ABC
+- `__init__.py` - 10 strategy implementations (TopK, Threshold, LongShort, MomentumFilter, RiskParity, MeanReversion, Confidence, SectorNeutral, TrailingStop, DualThresh)
+- `registry.py` - `StrategyRegistry` loads and validates JSON configs
+- `runner.py` - `run_all_strategies_shared()`: **one GPU pass for all stocks/dates, all strategies share the same signals**
+- `configs/default_strategies.json` - 10 pre-defined strategy configs
+- `run_all_strategies_shared()`: calls `_collect_signals_batched()` once, then iterates each strategy's `select_positions()` independently
+- CLI: `backtest-strategies --list` to preview; `backtest-strategies --start ... --end ...` to run all
+
 ### LLM Scoring (`scoring.py`, `llm/`)
 - `score_symbols()` - calls LLM to assess undervalued stocks
 - `llm/base.py` defines interface; `llm/openai_client.py` and `llm/dummy.py` are implementations
@@ -105,3 +115,4 @@ python -m auto_select_stock.ops_dashboard  # http://127.0.0.1:8000
 - **StreamingPriceDataset** avoids materializing all sequences in memory - loads features on demand with LRU cache
 - Checkpoint format is forward-compatible: missing config attributes get sensible defaults during `load_model()`
 - Backtest batch inference (`_collect_signals_batched`) groups windows across symbols for better GPU utilization
+- **Shared signal collection**: `run_all_strategies_shared()` collects signals once (one GPU pass), then runs all strategies independently — ~10x faster than running each strategy separately

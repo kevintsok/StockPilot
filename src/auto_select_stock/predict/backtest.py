@@ -14,7 +14,7 @@ except Exception:  # noqa: BLE001
 
 from ..config import DATA_DIR
 from ..storage import list_symbols, load_stock_history
-from .data import PRICE_FEATURE_COLUMNS, _load_financial_frame, _merge_price_financial
+from .data import PRICE_FEATURE_COLUMNS, TECHNICAL_FEATURE_COLUMNS, _load_financial_frame, _merge_price_financial, compute_technical_indicators
 from .inference import PricePredictor
 from .strategy import build_long_short_portfolio
 
@@ -144,7 +144,10 @@ def _build_feature_frame(
     price_features = price_df[price_columns].astype("float32").to_numpy()
     fin_df = _load_financial_frame(symbol, financial_columns, base_dir=base_dir)
     fin_features = _merge_price_financial(price_df, fin_df, financial_columns)
-    features = np.concatenate([price_features, fin_features], axis=1)
+    # Include technical indicators to match training
+    tech_df = compute_technical_indicators(price_df)
+    tech_features = tech_df[TECHNICAL_FEATURE_COLUMNS].astype("float32").to_numpy()
+    features = np.concatenate([price_features, fin_features, tech_features], axis=1)
     opens = price_df["open"].to_numpy(dtype="float32")
     closes = price_df["close"].to_numpy(dtype="float32")
     return price_df[["date"]], features, closes, opens
@@ -217,7 +220,7 @@ def _collect_signals_for_symbol(
         else:
             pred_close = pred_last * scaler_std[close_idx] + scaler_mean[close_idx]
             predicted_ret = float(pred_close / cur_c - 1.0)
-        realized_ret = float(nxt_c / max(nxt_o, 1e-6) - 1.0)
+        realized_ret = float(nxt_c / max(cur_c, 1e-6) - 1.0)
         signals.append((pd.Timestamp(target_dt), predicted_ret, realized_ret))
     return signals
 
@@ -268,7 +271,7 @@ def _collect_signals_batched(
             else:
                 pred_close = pred_last * scaler_std[close_idx] + scaler_mean[close_idx]
                 predicted_ret = float(pred_close / cur_c - 1.0)
-            realized_ret = float(nxt_c / max(nxt_o, 1e-6) - 1.0)
+            realized_ret = float(nxt_c / max(cur_c, 1e-6) - 1.0)
             daily_signals.setdefault(target_dt, []).append((sym, predicted_ret, realized_ret, industry_map.get(sym)))
             remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
             if remaining_windows[sym] <= 0 and sym in done_symbols:
@@ -554,5 +557,4 @@ def run_topk_strategy(
     )
 
 
-__all__ = ["BacktestConfig", "BacktestResult", "run_backtest", "run_backtest_for_symbol", "run_topk_strategy"]
-__all__.append("filter_a_share_symbols")
+__all__ = ["BacktestConfig", "BacktestResult", "run_backtest", "run_backtest_for_symbol", "run_topk_strategy", "filter_a_share_symbols", "_collect_signals_batched"]

@@ -17,6 +17,8 @@ from .config import DATA_DIR, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, MODEL_DIR
 from .dashboard import build_rows, render_dashboard
 from .html_report import render_report
 from .predict.backtest import BacktestConfig, filter_a_share_symbols, run_backtest, run_backtest_for_symbol, run_topk_strategy
+from .predict.strategies.registry import StrategyRegistry, make_strategy
+from .predict.strategies.runner import run_strategy_backtest, run_all_strategies
 from .scoring import score_symbols
 from .screener import render_screener_html, screen_stocks, parse_nl_query
 from .storage import ensure_data_dir, list_symbols
@@ -385,6 +387,94 @@ def cmd_backtest_per_symbol(args):
         print(f"[Backtest per symbol] {len(errors)} symbols failed (see CSV 'error' column).")
 
 
+def cmd_backtest_strategies(args):
+    ensure_data_dir()
+    checkpoint = Path(args.checkpoint) if args.checkpoint else MODEL_DIR / "price_transformer.pt"
+    strategies_dir = Path(args.strategies_dir) if args.strategies_dir else None
+
+    if args.list:
+        # Just list available strategies
+        if strategies_dir is None:
+            # Default to bundled configs
+            import auto_select_stock.predict.strategies.configs as configs_pkg
+            strategies_dir = Path(configs_pkg.__file__).parent
+        registry = StrategyRegistry(strategies_dir)
+        strategies = registry.list_strategies()
+        print(f"Found {len(strategies)} strategies in {strategies_dir}:")
+        for s in strategies:
+            print(f"  [{s['type']}] {s['name']}: {s['description']}")
+        return
+
+    if strategies_dir is None:
+        import auto_select_stock.predict.strategies.configs as configs_pkg
+        strategies_dir = Path(configs_pkg.__file__).parent
+
+    symbols = args.symbols or filter_a_share_symbols(symbols_from_data_dir(DATA_DIR))
+    cfg = BacktestConfig(
+        checkpoint=checkpoint,
+        start_date=args.start,
+        end_date=args.end,
+        symbols=symbols,
+        cost_bps=args.cost_bps,
+        slippage_bps=args.slippage_bps,
+        base_dir=DATA_DIR,
+        eval_batch_size=args.eval_batch_size,
+    )
+
+    results = run_all_strategies(strategies_dir, cfg, show_progress=True)
+
+    # Sort by total_return_net descending
+    results.sort(key=lambda r: r.metrics.get("total_return_net", float("-inf")), reverse=True)
+
+    print(f"\n{'Strategy':<30} {'Total Ret (Net)':>16} {'Sharpe (Net)':>14} {'Max DD (Net)':>14} {'Ann Ret (Net)':>14} {'Avg Turnover':>13}")
+    print("-" * 110)
+    for r in results:
+        m = r.metrics
+        print(
+            f"{r.strategy_name:<30} "
+            f"{m.get('total_return_net', 0):>16.2%} "
+            f"{m.get('sharpe_net', 0):>14.3f} "
+            f"{m.get('max_drawdown_net', 0):>14.2%} "
+            f"{m.get('annual_return_net', 0):>14.2%} "
+            f"{m.get('avg_turnover', 0):>13.2%}"
+        )
+
+    # Save results
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = checkpoint.with_name(f"{checkpoint.stem}_strategies_comparison.json")
+    payload = {
+        "checkpoint": str(checkpoint),
+        "strategies_dir": str(strategies_dir),
+        "start": args.start,
+        "end": args.end,
+        "cost_bps": args.cost_bps,
+        "slippage_bps": args.slippage_bps,
+        "results": [
+            {
+                "strategy_name": r.strategy_name,
+                "metrics": r.metrics,
+                "timeseries": [
+                    {
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "gross_ret": float(r.daily_returns.loc[dt]),
+                        "net_ret": float(r.daily_returns_net.loc[dt]),
+                        "turnover": float(r.turnover.loc[dt]),
+                    }
+                    for dt in r.daily_returns.index
+                ],
+            }
+            for r in results
+        ],
+    }
+    wrote_path, err = _write_with_fallback(out_path, lambda p: p.write_text(json.dumps(payload, indent=2, ensure_ascii=False)))
+    if wrote_path:
+        print(f"\n[Saved] Results written to {wrote_path}")
+    elif err:
+        print(f"\n[Error] Failed to write results: {err}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="A股自动选股器 CLI")
     sub = parser.add_subparsers(dest="command")
@@ -521,6 +611,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_backtest_sym.add_argument("--workers", type=int, default=4, help="并行 worker 数，默认 4")
     p_backtest_sym.add_argument("--eval-batch-size", type=int, default=64, help="回测推理 batch 大小")
     p_backtest_sym.set_defaults(func=cmd_backtest_per_symbol)
+
+    p_strategies = sub.add_parser("backtest-strategies", help="运行所有 JSON 策略配置并对比回测结果")
+    p_strategies.add_argument("symbols", nargs="*", help="指定股票代码，默认 data 目录下全部")
+    p_strategies.add_argument("--start", default=None, help="回测起始日期，格式 YYYY-MM-DD")
+    p_strategies.add_argument("--end", default=None, help="回测结束日期，格式 YYYY-MM-DD")
+    p_strategies.add_argument("--checkpoint", required=True, help="模型 checkpoint 路径")
+    p_strategies.add_argument(
+        "--strategies-dir",
+        default=None,
+        help="策略 JSON 配置目录，默认使用内置的 strategies/configs/",
+    )
+    p_strategies.add_argument(
+        "--list",
+        action="store_true",
+        help="仅列出策略配置，不运行回测",
+    )
+    p_strategies.add_argument("--cost-bps", type=float, default=15.0, help="单边交易成本（bp），默认 15")
+    p_strategies.add_argument("--slippage-bps", type=float, default=10.0, help="滑点（bp），默认 10")
+    p_strategies.add_argument("--eval-batch-size", type=int, default=64, help="推理 batch 大小")
+    p_strategies.add_argument(
+        "--output",
+        default=None,
+        help="结果 JSON 输出路径，默认 checkpoint 同目录下",
+    )
+    p_strategies.set_defaults(func=cmd_backtest_strategies)
 
     return parser
 
