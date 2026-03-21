@@ -1,0 +1,1 @@
+5 15 * * 1-5 /mnt/d/Projects/auto-select-stock/scripts/notify_daily.sh >> /mnt/d/Projects/auto-select-stock/logs/notify.log 2>&1
