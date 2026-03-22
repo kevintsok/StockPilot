@@ -5,15 +5,28 @@ Reuses the existing predict_pipeline.py infrastructure.
 """
 
 from datetime import date
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 from ..predict_pipeline import get_latest_price_date as _get_latest_date
 from ..predict_pipeline import get_top_k_stocks
+from ..predict.strategies.registry import StrategyRegistry
 
 
 def get_latest_price_date() -> str:
     """Proxy for predict_pipeline.get_latest_price_date."""
     return _get_latest_date()
+
+
+def _load_strategy_config(strategy_name: str) -> Dict[str, Any]:
+    """Load strategy config from registry JSON files."""
+    try:
+        registry = StrategyRegistry(
+            Path(__file__).parent.parent / "predict" / "strategies" / "configs"
+        )
+        return registry.get(strategy_name)
+    except Exception:
+        return {}
 
 
 def _format_weight(weight: float, capital: float = 100_000) -> str:
@@ -22,6 +35,33 @@ def _format_weight(weight: float, capital: float = 100_000) -> str:
     if amount >= 10_000:
         return f"{amount / 10_000:.1f}万"
     return f"{amount:.0f}元"
+
+
+def _strategy_params_summary(strategy_name: str, cfg: Dict[str, Any]) -> str:
+    """Build a short string summarizing key strategy parameters."""
+    p = cfg.get("params", {})
+    stype = cfg.get("type", "")
+    horizon = cfg.get("horizon", "1d")
+
+    if stype == "risk_parity":
+        vl = p.get("vol_lookback", "?")
+        return f"波动率倒数加权(vol_LookBack={vl}) | {horizon}预测"
+    elif stype == "topk":
+        k = p.get("top_k", "?")
+        allow_short = p.get("allow_short", False)
+        side = "多空" if allow_short else "纯多"
+        return f"Top-{k}等权({side}) | {horizon}预测"
+    elif stype == "trailing_stop":
+        pct = p.get("stop_pct", "?")
+        return f"追踪止损({pct}%) | {horizon}预测"
+    elif stype == "confidence":
+        mc = p.get("min_confidence_bp", "?")
+        return f"置信度加权(min={mc}bp) | {horizon}预测"
+    elif stype == "momentum_filter":
+        lb = p.get("lookback", "?")
+        return f"动量过滤(LB={lb}) | {horizon}预测"
+    else:
+        return f"{stype} | {horizon}预测"
 
 
 def generate_report(
@@ -47,70 +87,78 @@ def generate_report(
     """
     today_str = date.today().isoformat()
     latest_db_date = get_latest_price_date()
+
+    # Load strategy config to get actual top_k and horizon
+    cfg = _load_strategy_config(strategy)
+    actual_top_k = cfg.get("params", {}).get("top_k", top_k)
+    strategy_horizon = cfg.get("horizon", horizon)  # strategy's own horizon (e.g. "1d")
+
     results = get_top_k_stocks(
         checkpoint=checkpoint,
         strategy=strategy,
-        top_k=top_k,
-        horizon=horizon,
+        top_k=actual_top_k,
+        horizon=horizon,  # ranking horizon
     )
 
-    # Determine which horizons to display
-    display_horizons = ["1d", "3d", "5d", "7d", "14d", "20d"]
-    if results and results[0][1]:
-        available = set(results[0][1].keys())
-        display_horizons = [h for h in display_horizons if h in available]
+    params_summary = _strategy_params_summary(strategy, cfg)
 
-    # Strategy description
-    strategy_descriptions = {
-        "RiskParity-VL10-1d": "波动率倒数加权（vol_lookback=10天，1日预测）",
-        "RiskParity-VL20-5d": "波动率倒数加权（vol_lookback=20天，5日预测）",
-        "TopK-K3-1d": "Top-3等权策略（1日预测）",
-        "TopK-K10-1d": "Top-10等权策略（1日预测）",
-        "StopLoss-3pct-5d": "3%止损追踪（5日预测）",
-        "StopLoss-8pct-1d": "8%止损追踪（1日预测）",
-        "Confidence-MC100bp-1d": "置信度加权（最低100bp，1日预测）",
-    }
-    strategy_desc = strategy_descriptions.get(strategy, strategy)
-
-    # Build table rows
-    horizon_headers = "".join(f"<th>{h}</th>" for h in display_horizons)
+    # Table columns: Stock | [horizon] Return | Key Params | Weight/Position
     rows = ""
     for sym, pred_rets, weight in results:
-        # Color code: green for positive, red for negative
-        def cell_class(h):
-            v = pred_rets.get(h, 0.0)
-            return "pos" if v > 0 else "neg" if v < 0 else ""
+        # Primary prediction (strategy's own horizon)
+        primary_ret = pred_rets.get(strategy_horizon, 0.0) * 100
+        color = "#2e7d32" if primary_ret > 0 else "#c62828" if primary_ret < 0 else "#666"
+
+        # Build params column from config
+        p = cfg.get("params", {})
+        stype = cfg.get("type", "")
+        if stype == "risk_parity":
+            params_str = f"vol_LookBack={p.get('vol_lookback', '?')}"
+        elif stype == "topk":
+            params_str = f"K={p.get('top_k', '?')}"
+        elif stype == "trailing_stop":
+            params_str = f"止损{p.get('stop_pct', '?')}% | {p.get('horizon', '?')}"
+        elif stype == "confidence":
+            params_str = f"min={p.get('min_confidence_bp', '?')}bp"
+        elif stype == "momentum_filter":
+            params_str = f"lookback={p.get('lookback', '?')}天"
+        else:
+            params_str = ""
+
+        # Position amount
+        pos_amount = _format_weight(weight, capital)
 
         cells = f'<td><b>{sym}</b></td>'
-        for h in display_horizons:
-            pct = pred_rets.get(h, 0.0) * 100
-            cls = cell_class(h)
-            color = "#2e7d32" if cls == "pos" else "#c62828" if cls == "neg" else "#666"
-            cells += f'<td style="color:{color}">{pct:+.2f}%</td>'
-
-        # Position size
-        pos_amount = _format_weight(weight, capital)
+        cells += f'<td style="color:{color};font-weight:bold">{primary_ret:+.2f}%</td>'
+        cells += f'<td style="color:#555">{params_str}</td>'
         cells += f'<td><span style="color:#1565c0">{weight:.2%}</span><br><span style="color:#888;font-size:11px">≈{pos_amount}</span></td>'
         rows += f"<tr>{cells}</tr>\n"
 
-    # Summary stats
+    # Summary
     total_weight = sum(w for _, _, w in results)
-    avg_1d = sum(pred_rets.get("1d", 0) for _, pred_rets, _ in results) / len(results) if results else 0
-    avg_5d = sum(pred_rets.get("5d", 0) for _, pred_rets, _ in results) / len(results) if results else 0
+    avg_primary = (
+        sum(pred_rets.get(strategy_horizon, 0) for _, pred_rets, _ in results) / len(results)
+        if results else 0
+    )
 
     html = f"""<html>
 <head><meta charset="utf-8"></head>
 <body>
 <h3>StockPilot 每日推荐 ({today_str})</h3>
-<p><b>数据库最新:</b> {latest_db_date} &nbsp;|&nbsp; <b>策略:</b> {strategy}（{strategy_desc}）&nbsp;|&nbsp; <b>排序:</b> {horizon}</p>
+<p>
+  <b>数据库最新:</b> {latest_db_date} &nbsp;|&nbsp;
+  <b>策略:</b> {strategy} &nbsp;|&nbsp;
+  <b>推送股数:</b> {actual_top_k}只
+</p>
+<p style="color:#666;font-size:13px">{params_summary}</p>
 
-<h4>📊 本次推荐持仓（风险平价加权）</h4>
-<table border="1" cellpadding="6" cellspacing="0">
+<table border="1" cellpadding="8" cellspacing="0">
 <thead>
 <tr>
-<th>股票代码</th>
-{horizon_headers}
-<th>权重 / 仓位</th>
+  <th>股票代码</th>
+  <th>{strategy_horizon}预测收益</th>
+  <th>关键参数</th>
+  <th>权重 / 仓位</th>
 </tr>
 </thead>
 <tbody>
@@ -118,15 +166,17 @@ def generate_report(
 </tbody>
 </table>
 
-<p><b>汇总:</b> 共{len(results)}只股票 | 总仓位{total_weight:.0%} | 平均1d收益{avg_1d*100:+.2f}% | 平均5d收益{avg_5d*100:+.2f}%</p>
+<p>
+  <b>汇总:</b> {len(results)}只股票 | 总仓位{total_weight:.0%} |
+  平均{strategy_horizon}收益{avg_primary*100:+.2f}% |
+  假设本金{capital:,.0f}元
+</p>
 
 <p style="background:#f5f5f5;padding:10px;border-radius:6px">
-<b>策略说明:</b> {strategy_desc}<br>
-<br>
-<b>操作建议:</b> 按上述权重买入对应股票。假设初始资金{capital:,.0f}元，按权重分配每只股票的买入金额（见「仓位」列）。<br>
-<b>风险提示:</b> A股T+1制度，当日买入次日才能卖出；预测仅供参考，不构成投资建议。
+<b>操作建议:</b> 按「权重」列分配买入金额（≈后的数字），T+1制度当日买入次日可卖。<br>
+<b>风险提示:</b> 预测仅供参考，不构成投资建议。A股涨跌停时无法买卖。
 </p>
-<p style="color:#888;font-size:12px">由 StockPilot 自动生成 · StockPilot</p>
+<p style="color:#888;font-size:12px">由 StockPilot 自动生成</p>
 </body>
 </html>"""
 
