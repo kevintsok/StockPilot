@@ -4,6 +4,8 @@
 
 Predict next-day returns, rank stocks, and compare 10+ trading strategies in one command. Built for Chinese A-shares (沪深/创业板).
 
+**[中文文档](docs/README.md)**
+
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.4+-red.svg)
 
@@ -212,7 +214,7 @@ predicted_return (regression head last timestep)
 
 ## Backtest Results (2024-06-01 ~ 2025-06-01)
 
-![Backtest Capital Curve](models/backtest_diverse_30_capital_curve.png)
+![Backtest Capital Curve](docs/backtest_diverse_30_capital_curve.png)
 
 **Model**: `price_transformer_multihorizon_full.pt` — Multi-horizon Transformer (1d/3d/5d/7d/14d/20d heads), 1,677 stocks, seq_len=1024, trained 3 epochs. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。
 
