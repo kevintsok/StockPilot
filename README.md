@@ -135,12 +135,15 @@ python -m auto_select_stock.ops_dashboard
 │                                 │                                       │
 │                    ┌────────────┴────────────┐                          │
 │                    ▼                         ▼                          │
-│  ┌───────────────────────────┐  ┌───────────────────────────────┐   │
-│  │  Regression Head           │  │  Classification Head            │   │
-│  │  Linear(256 → 1)           │  │  Linear(256 → 1)                 │   │
-│  │  输出: (batch, seq_len)    │  │  输出: (batch, seq_len) logits  │   │
-│  │  每步一个 log_return 预测  │  │  每步一个 up/down 概率           │   │
-│  └─────────────┬─────────────┘  └──────────────┬──────────────────┘   │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  6× Regression Heads  (1 per horizon: 1d / 3d / 5d / 7d / 14d / 20d)  │   │
+│  │  Linear(256 → 1) each  →  reg_all: (6, batch, seq_len)          │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                 │                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  6× Classification Heads (1 per horizon, same structure)        │   │
+│  │  Linear(256 → 1) each  →  cls_all: (6, batch, seq_len)        │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
 │                │                                  │                     │
 │                └──────────────┬───────────────────┘                     │
 │                               ▼                                          │
@@ -153,14 +156,14 @@ python -m auto_select_stock.ops_dashboard
                ┌───────────────┴────────────────┐
                ▼                                ▼
 ┌──────────────────────────────┐  ┌──────────────────────────────────────┐
-│  Regression Output            │  │  Classification Output               │
+│  Regression Output (1d head)  │  │  Classification Output (1d head)      │
 │                              │  │                                      │
-│  pred_log_return = out[0,-1] │  │  pred_direction = sigmoid(out[1,-1]) │
+│  pred_log_return = reg[0,-1] │  │  pred_direction = sigmoid(cls[0,-1]) │
 │                              │  │  > 0.5 → 上涨, < 0.5 → 下跌         │
 │  exp(pred_log_return) - 1    │  │                                      │
-│  = predicted_return (预测收益率) │  │  用于: 置信度排序、策略权重         │
+│  = predicted_return          │  │  用于: 置信度排序、策略权重             │
 │                              │  │                                      │
-│  用于: 策略排序 & 权重计算     │  │                                      │
+│  用于: 策略排序 & 权重计算     │  │  All 6 horizons via reg_all/cls_all  │
 └──────────────────────────────┘  └──────────────────────────────────────┘
 ```
 
