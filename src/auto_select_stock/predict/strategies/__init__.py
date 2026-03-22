@@ -39,9 +39,9 @@ def _normalize_weights(weights: Dict[str, float], total: float) -> Dict[str, flo
     return {sym: w / total for sym, w in weights.items()}
 
 
-def _top_k(sigs: List[Signal], k: int, ascending: bool = False) -> List[Signal]:
-    """Return the top (or bottom) K signals by predicted return."""
-    sorted_sigs = sorted(sigs, key=lambda s: s.predicted_ret, reverse=not ascending)
+def _top_k(sigs: List[Signal], k: int, ascending: bool = False, horizon: str = "1d") -> List[Signal]:
+    """Return the top (or bottom) K signals by predicted return for the given horizon."""
+    sorted_sigs = sorted(sigs, key=lambda s: s.get_horizon_ret(horizon), reverse=not ascending)
     return sorted_sigs[:k]
 
 
@@ -65,7 +65,8 @@ class TopKStrategy(BaseStrategy):
 
     name = "TopK-Proportional"
 
-    def __init__(self, top_k: int = 5, allow_short: bool = False):
+    def __init__(self, top_k: int = 5, allow_short: bool = False, horizon: str = "1d", name: str = None, tag: str = None):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.allow_short = allow_short
 
@@ -75,26 +76,26 @@ class TopKStrategy(BaseStrategy):
         prev_weights: Dict[str, float],
         cache: Dict[str, Any],
     ) -> Dict[str, float]:
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
         if self.allow_short:
             n = len(sorted_sigs)
             top_n = max(1, n // 10)
             long_sigs = sorted_sigs[:top_n]
             short_sigs = sorted_sigs[-top_n:]
             all_sigs = long_sigs + short_sigs
-            total_pred = sum(abs(s.predicted_ret) for s in all_sigs)
+            total_pred = sum(abs(self._get_predicted_ret(s)) for s in all_sigs)
             weights = {}
             for s in long_sigs:
-                weights[s.symbol] = s.predicted_ret / total_pred
+                weights[s.symbol] = self._get_predicted_ret(s) / total_pred
             for s in short_sigs:
-                weights[s.symbol] = s.predicted_ret / total_pred
+                weights[s.symbol] = self._get_predicted_ret(s) / total_pred
             return weights
         else:
-            top_sigs = [s for s in sorted_sigs if s.predicted_ret > 0][: self.top_k]
-            total_pred = sum(s.predicted_ret for s in top_sigs)
+            top_sigs = [s for s in sorted_sigs if self._get_predicted_ret(s) > 0][: self.top_k]
+            total_pred = sum(self._get_predicted_ret(s) for s in top_sigs)
             if total_pred <= 0:
                 return {}
-            return {s.symbol: s.predicted_ret / total_pred for s in top_sigs}
+            return {s.symbol: self._get_predicted_ret(s) / total_pred for s in top_sigs}
 
 
 # ----------------------------------------------------------------------
@@ -107,7 +108,8 @@ class ThresholdStrategy(BaseStrategy):
 
     name = "TopK-Threshold"
 
-    def __init__(self, top_k: int = 5, threshold: float = 0.01, allow_short: bool = False):
+    def __init__(self, top_k: int = 5, threshold: float = 0.01, allow_short: bool = False, horizon: str = "1d", name: str = None, tag: str = None):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.threshold = threshold
         self.allow_short = allow_short
@@ -119,8 +121,8 @@ class ThresholdStrategy(BaseStrategy):
         cache: Dict[str, Any],
     ) -> Dict[str, float]:
         if self.allow_short:
-            long_sigs = [s for s in signals if s.predicted_ret > self.threshold]
-            short_sigs = [s for s in signals if s.predicted_ret < -self.threshold]
+            long_sigs = [s for s in signals if self._get_predicted_ret(s) > self.threshold]
+            short_sigs = [s for s in signals if self._get_predicted_ret(s) < -self.threshold]
             n_long = len(long_sigs) or 1
             n_short = len(short_sigs) or 1
             long_w = 0.5 / n_long
@@ -129,8 +131,8 @@ class ThresholdStrategy(BaseStrategy):
             weights.update({s.symbol: short_w for s in short_sigs})
             return weights
         else:
-            candidates = [s for s in signals if s.predicted_ret > self.threshold]
-            top_sigs = sorted(candidates, key=lambda s: s.predicted_ret, reverse=True)[: self.top_k]
+            candidates = [s for s in signals if self._get_predicted_ret(s) > self.threshold]
+            top_sigs = sorted(candidates, key=lambda s: self._get_predicted_ret(s), reverse=True)[: self.top_k]
             if not top_sigs:
                 return {}
             w = 1.0 / len(top_sigs)
@@ -147,7 +149,8 @@ class LongShortStrategy(BaseStrategy):
 
     name = "LongShort-Equal"
 
-    def __init__(self, top_pct: float = 0.1, allow_short: bool = True):
+    def __init__(self, top_pct: float = 0.1, allow_short: bool = True, horizon: str = "1d", name: str = None, tag: str = None):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_pct = top_pct
         self.allow_short = allow_short
 
@@ -159,7 +162,7 @@ class LongShortStrategy(BaseStrategy):
     ) -> Dict[str, float]:
         if not signals:
             return {}
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
         n = len(sorted_sigs)
         top_n = max(1, int(n * self.top_pct))
         long_sigs = sorted_sigs[:top_n]
@@ -196,7 +199,11 @@ class MomentumFilterStrategy(BaseStrategy):
         lookback: int = 10,
         threshold: float = 0.0,
         allow_short: bool = False,
+        horizon: str = "1d",
+        name: str = None,
+        tag: str = None,
     ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.lookback = lookback
         self.threshold = threshold
@@ -212,7 +219,7 @@ class MomentumFilterStrategy(BaseStrategy):
 
         for s in signals:
             hist = momentum_cache.setdefault(s.symbol, [])
-            hist.append(s.predicted_ret)
+            hist.append(self._get_predicted_ret(s))
             # Keep only last lookback entries
             if len(hist) > self.lookback:
                 momentum_cache[s.symbol] = hist[-self.lookback :]
@@ -220,23 +227,24 @@ class MomentumFilterStrategy(BaseStrategy):
         filtered: List[Signal] = []
         for s in signals:
             hist = momentum_cache.get(s.symbol, [])
+            pred_ret = self._get_predicted_ret(s)
             if len(hist) < 2:
                 # Not enough history; use raw signal
-                if s.predicted_ret > self.threshold:
+                if pred_ret > self.threshold:
                     filtered.append(s)
                 continue
             ma = sum(hist[-self.lookback :]) / len(hist[-self.lookback :])
-            if s.predicted_ret > ma:
+            if pred_ret > ma:
                 filtered.append(s)
 
         if not filtered:
             return {}
 
-        top_sigs = sorted(filtered, key=lambda s: s.predicted_ret, reverse=True)[: self.top_k]
-        total_pred = sum(s.predicted_ret for s in top_sigs)
+        top_sigs = sorted(filtered, key=lambda s: self._get_predicted_ret(s), reverse=True)[: self.top_k]
+        total_pred = sum(self._get_predicted_ret(s) for s in top_sigs)
         if total_pred <= 0:
             return {}
-        return {s.symbol: s.predicted_ret / total_pred for s in top_sigs}
+        return {s.symbol: self._get_predicted_ret(s) / total_pred for s in top_sigs}
 
     def on_day_end(
         self,
@@ -263,7 +271,11 @@ class RiskParityStrategy(BaseStrategy):
         top_k: int = 5,
         allow_short: bool = False,
         vol_lookback: int = 20,
+        horizon: str = "1d",
+        name: str = None,
+        tag: str = None,
     ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.allow_short = allow_short
         self.vol_lookback = vol_lookback
@@ -284,13 +296,13 @@ class RiskParityStrategy(BaseStrategy):
                 vol_cache[s.symbol] = hist[-self.vol_lookback :]
 
         # Take top-K by predicted return
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
         if self.allow_short:
             top_sigs = sorted_sigs[: self.top_k]
             short_sigs = sorted_sigs[-self.top_k :]
             all_sigs = top_sigs + short_sigs
         else:
-            top_sigs = [s for s in sorted_sigs if s.predicted_ret > 0][: self.top_k]
+            top_sigs = [s for s in sorted_sigs if self._get_predicted_ret(s) > 0][: self.top_k]
             all_sigs = top_sigs
 
         if not all_sigs:
@@ -329,7 +341,8 @@ class MeanReversionStrategy(BaseStrategy):
 
     name = "BottomK-Reversal"
 
-    def __init__(self, top_k: int = 5, allow_short: bool = True):
+    def __init__(self, top_k: int = 5, allow_short: bool = True, horizon: str = "1d", name: str = None, tag: str = None):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.allow_short = allow_short
 
@@ -341,7 +354,7 @@ class MeanReversionStrategy(BaseStrategy):
     ) -> Dict[str, float]:
         if not signals:
             return {}
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
         losers = sorted_sigs[: self.top_k]  # bottom-K by pred (worst) = long
         winners = sorted_sigs[-self.top_k :]  # top-K by pred (best) = short
         if not self.allow_short:
@@ -375,7 +388,11 @@ class ConfidenceStrategy(BaseStrategy):
         top_k: int = 5,
         allow_short: bool = False,
         min_confidence: float = 0.005,
+        horizon: str = "1d",
+        name: str = None,
+        tag: str = None,
     ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.allow_short = allow_short
         self.min_confidence = min_confidence
@@ -387,19 +404,19 @@ class ConfidenceStrategy(BaseStrategy):
         cache: Dict[str, Any],
     ) -> Dict[str, float]:
         if self.allow_short:
-            long_sigs = [s for s in signals if s.predicted_ret > self.min_confidence]
-            short_sigs = [s for s in signals if s.predicted_ret < -self.min_confidence]
-            top_long = sorted(long_sigs, key=lambda s: s.predicted_ret, reverse=True)[: self.top_k]
-            top_short = sorted(short_sigs, key=lambda s: s.predicted_ret)[: self.top_k]
+            long_sigs = [s for s in signals if self._get_predicted_ret(s) > self.min_confidence]
+            short_sigs = [s for s in signals if self._get_predicted_ret(s) < -self.min_confidence]
+            top_long = sorted(long_sigs, key=lambda s: self._get_predicted_ret(s), reverse=True)[: self.top_k]
+            top_short = sorted(short_sigs, key=lambda s: self._get_predicted_ret(s))[: self.top_k]
             all_sigs = top_long + top_short
         else:
-            candidates = [s for s in signals if s.predicted_ret > self.min_confidence]
-            all_sigs = sorted(candidates, key=lambda s: s.predicted_ret, reverse=True)[: self.top_k]
+            candidates = [s for s in signals if self._get_predicted_ret(s) > self.min_confidence]
+            all_sigs = sorted(candidates, key=lambda s: self._get_predicted_ret(s), reverse=True)[: self.top_k]
 
         if not all_sigs:
             return {}
 
-        total_conf = sum(abs(s.predicted_ret) for s in all_sigs)
+        total_conf = sum(abs(self._get_predicted_ret(s)) for s in all_sigs)
         if total_conf <= 0:
             return {}
 
@@ -408,8 +425,8 @@ class ConfidenceStrategy(BaseStrategy):
         short_alloc = 0.0 if not self.allow_short else -0.5
 
         for s in all_sigs:
-            conf = abs(s.predicted_ret) / total_conf
-            if s.predicted_ret > 0:
+            conf = abs(self._get_predicted_ret(s)) / total_conf
+            if self._get_predicted_ret(s) > 0:
                 weights[s.symbol] = long_alloc * conf
             else:
                 weights[s.symbol] = short_alloc * conf
@@ -426,7 +443,8 @@ class SectorNeutralStrategy(BaseStrategy):
 
     name = "Sector-Neutral"
 
-    def __init__(self, top_pct: float = 0.1, allow_short: bool = True):
+    def __init__(self, top_pct: float = 0.1, allow_short: bool = True, horizon: str = "1d", name: str = None, tag: str = None):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_pct = top_pct
         self.allow_short = allow_short
 
@@ -439,7 +457,7 @@ class SectorNeutralStrategy(BaseStrategy):
         if not signals:
             return {}
 
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
         n = len(sorted_sigs)
         top_n = max(1, int(n * self.top_pct))
         long_sigs = sorted_sigs[:top_n]
@@ -489,7 +507,11 @@ class TrailingStopStrategy(BaseStrategy):
         top_k: int = 5,
         stop_loss: float = 0.05,
         allow_short: bool = False,
+        horizon: str = "1d",
+        name: str = None,
+        tag: str = None,
     ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.top_k = top_k
         self.stop_loss = stop_loss
         self.allow_short = allow_short
@@ -505,8 +527,8 @@ class TrailingStopStrategy(BaseStrategy):
         held = stop_cache.setdefault("held", set())  # symbols currently held
 
         # Determine new top-K
-        sorted_sigs = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
-        top_sigs = [s for s in sorted_sigs if s.predicted_ret > 0][: self.top_k]
+        sorted_sigs = sorted(signals, key=lambda s: self._get_predicted_ret(s), reverse=True)
+        top_sigs = [s for s in sorted_sigs if self._get_predicted_ret(s) > 0][: self.top_k]
         new_top = {s.symbol for s in top_sigs}
 
         # Check stop-loss on previously held positions
@@ -540,8 +562,8 @@ class TrailingStopStrategy(BaseStrategy):
             return {}
 
         held_sigs = [s for s in signals if s.symbol in held]
-        total_pred = sum(s.predicted_ret for s in held_sigs) or 1e-10
-        return {s.symbol: s.predicted_ret / total_pred for s in held_sigs}
+        total_pred = sum(self._get_predicted_ret(s) for s in held_sigs) or 1e-10
+        return {s.symbol: self._get_predicted_ret(s) / total_pred for s in held_sigs}
 
     def on_day_end(
         self,
@@ -577,7 +599,11 @@ class DualThreshStrategy(BaseStrategy):
         upper_thresh: float = 0.02,
         lower_thresh: float = -0.01,
         top_k: int = 5,
+        horizon: str = "1d",
+        name: str = None,
+        tag: str = None,
     ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
         self.upper_thresh = upper_thresh
         self.lower_thresh = lower_thresh
         self.top_k = top_k
@@ -589,13 +615,13 @@ class DualThreshStrategy(BaseStrategy):
         cache: Dict[str, Any],
     ) -> Dict[str, float]:
         long_candidates = sorted(
-            [s for s in signals if s.predicted_ret > self.upper_thresh],
-            key=lambda s: s.predicted_ret,
+            [s for s in signals if self._get_predicted_ret(s) > self.upper_thresh],
+            key=lambda s: self._get_predicted_ret(s),
             reverse=True,
         )[: self.top_k]
         short_candidates = sorted(
-            [s for s in signals if s.predicted_ret < self.lower_thresh],
-            key=lambda s: s.predicted_ret,
+            [s for s in signals if self._get_predicted_ret(s) < self.lower_thresh],
+            key=lambda s: self._get_predicted_ret(s),
         )[: self.top_k]
 
         n_long = len(long_candidates) or 1

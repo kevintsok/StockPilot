@@ -7,9 +7,20 @@ from typing import Any, Dict, List, Optional
 class Signal:
     """A single stock's prediction for a given trading date."""
     symbol: str
-    predicted_ret: float  # model predicted return
-    realized_ret: float  # actual realized return (for reporting, not used in decisions)
+    predicted_ret: float  # model predicted return (1d horizon, backward compat)
+    realized_ret: float  # actual realized return (entry at T close, exit at T+1 close)
     industry: Optional[str] = None  # for sector-neutral strategies
+    predicted_rets: Optional[Dict[str, float]] = None  # e.g. {"3d": 0.05, "5d": 0.08, ...}
+    entry_price: float = 0.0   # T's close price (execution price for buying)
+    auc_limit: int = 0         # 0=none, 1=limit_up(cannot buy), -1=limit_down(cannot sell)
+
+    def get_horizon_ret(self, horizon: str = "1d") -> float:
+        """Get predicted return for a specific horizon."""
+        if horizon == "1d":
+            return self.predicted_ret
+        if self.predicted_rets:
+            return self.predicted_rets.get(horizon, self.predicted_ret)
+        return self.predicted_ret
 
 
 class BaseStrategy(ABC):
@@ -20,11 +31,25 @@ class BaseStrategy(ABC):
     dictionary of ``{symbol: weight}``.
     """
 
+    # Class-level defaults (overridden by instance-level attrs set via __init__)
+    name: str = "BaseStrategy"
+    tag: str = ""
+
+    def __init__(self, horizon: str = "1d", name: str = None, tag: str = None):
+        self._horizon = horizon
+        if name is not None:
+            self.name = name
+        if tag is not None:
+            self.tag = tag
+
     @property
-    @abstractmethod
-    def name(self) -> str:
-        """Human-readable strategy name."""
-        ...
+    def horizon(self) -> str:
+        """The prediction horizon this strategy uses for ranking/selection (default: 1d)."""
+        return self._horizon
+
+    def _get_predicted_ret(self, signal: Signal) -> float:
+        """Get the predicted return for this strategy's horizon."""
+        return signal.get_horizon_ret(self.horizon)
 
     def select_positions(
         self,

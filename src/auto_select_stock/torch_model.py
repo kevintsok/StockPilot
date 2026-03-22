@@ -7,7 +7,32 @@ import torch
 from torch import nn
 
 from .config import MODEL_DIR, PREPROCESSED_DIR
-from .predict.data import FINANCIAL_FEATURE_COLUMNS, PRICE_FEATURE_COLUMNS
+
+# Feature column constants (duplicated here to avoid circular import with predict.data)
+_PRICE_FEATURE_COLUMNS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "turnover_rate",
+    "volume_ratio",
+    "pct_change",
+    "amplitude",
+    "change_amount",
+]
+_FINANCIAL_FEATURE_COLUMNS = [
+    "roe",
+    "net_profit_margin",
+    "gross_margin",
+    "operating_cashflow_growth",
+    "debt_to_asset",
+    "eps",
+    "operating_cashflow_per_share",
+]
+
+DEFAULT_HORIZONS = [1, 3, 5, 7, 14, 20]
 
 
 class PositionalEncoding(nn.Module):
@@ -48,19 +73,22 @@ class PositionalEncoding(nn.Module):
 
 class PriceTransformer(nn.Module):
     """
-    Causal Transformer encoder that maps历史特征到下一时刻收盘价（自回归形式）。
+    Causal Transformer encoder that maps 历史特征到下一时刻收盘价（自回归形式）。
+    Supports multi-horizon prediction via parallel regression/classification heads.
     """
 
     def __init__(
         self,
         input_dim: int,
-        d_model: int = 128,
+        horizons: List[int] = None,
+        d_model: int = 256,  # increased from 128 for more capacity
         nhead: int = 8,
-        num_layers: int = 8,
-        dim_feedforward: int = 256,
+        num_layers: int = 10,  # increased from 8 for deeper reasoning
+        dim_feedforward: int = 512,  # increased from 256
         dropout: float = 0.1,
     ):
         super().__init__()
+        self.horizons = horizons or DEFAULT_HORIZONS
         self.input_proj = nn.Linear(input_dim, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -71,8 +99,12 @@ class PriceTransformer(nn.Module):
         )
         self.pe = PositionalEncoding(d_model=d_model, dropout=dropout)
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.head = nn.Linear(d_model, 1)
-        self.cls_head = nn.Linear(d_model, 1)
+        # Multi-head architecture: each head predicts one horizon
+        self.reg_heads = nn.ModuleList([nn.Linear(d_model, 1) for _ in self.horizons])
+        self.cls_heads = nn.ModuleList([nn.Linear(d_model, 1) for _ in self.horizons])
+        # Backward-compat aliases: first head = 1d prediction
+        self.head = self.reg_heads[0]
+        self.cls_head = self.cls_heads[0]
         self._cached_mask: Optional[torch.Tensor] = None
 
     def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
@@ -82,16 +114,25 @@ class PriceTransformer(nn.Module):
             self._cached_mask = mask
         return self._cached_mask
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # x shape: (batch, seq_len, input_dim)
         x = self.input_proj(x)  # (batch, seq_len, d_model)
         x = x.transpose(0, 1)  # (seq_len, batch, d_model)
         x = self.pe(x)
         mask = self._causal_mask(seq_len=x.size(0), device=x.device)
         encoded = self.encoder(x, mask=mask)  # (seq_len, batch, d_model)
-        reg = self.head(encoded).squeeze(-1)  # (seq_len, batch)
-        cls = self.cls_head(encoded).squeeze(-1)  # (seq_len, batch)
-        return reg.transpose(0, 1), cls.transpose(0, 1)  # (batch, seq_len)
+
+        # Multi-head outputs: stack all horizon predictions
+        reg_all = torch.stack([h(encoded).squeeze(-1) for h in self.reg_heads], dim=0)  # (num_hor, seq_len, batch)
+        cls_all = torch.stack([h(encoded).squeeze(-1) for h in self.cls_heads], dim=0)  # (num_hor, seq_len, batch)
+
+        # Backward compat: first head (1d) as single outputs
+        reg = reg_all[0]  # (seq_len, batch)
+        cls = cls_all[0]  # (seq_len, batch)
+        return reg.transpose(0, 1), cls.transpose(0, 1), reg_all.transpose(1, 2), cls_all.transpose(1, 2)
+        # Returns: (batch, seq_len), (batch, seq_len), (num_hor, batch, seq_len), (num_hor, batch, seq_len)
 
 
 @dataclass
@@ -108,11 +149,13 @@ class TrainConfig:
     num_workers: int = 0
     train_ratio: float = 0.8
     date_windows: List[str] = field(default_factory=list)
-    price_columns: List[str] = field(default_factory=lambda: PRICE_FEATURE_COLUMNS.copy())
+    price_columns: List[str] = field(default_factory=lambda: _PRICE_FEATURE_COLUMNS.copy())
     financial_columns: Optional[List[str]] = None
+    technical_columns: Optional[List[str]] = None  # if None, defaults to TECHNICAL_FEATURE_COLUMNS
     target_mode: str = "log_return"  # "log_return" or "close"
-    lambda_reg: float = 1000.0
-    lambda_cls: float = 1
+    lambda_reg: float = 0.1  # regression weight (small - ranking signal is secondary)
+    lambda_cls: float = 10.0  # classification weight (dominant - provides directional stability)
+    lambda_rank: float = 1.0  # pairwise ranking loss weight (ListMLE-style)
     save_path: Path = MODEL_DIR / "price_transformer.pt"
     experiment_name: str = "experiment"
     checkpoint_steps: int = 10000
@@ -126,4 +169,7 @@ class TrainConfig:
     wandb_tags: List[str] = field(default_factory=list)
     wandb_mode: Optional[str] = None  # e.g. "offline"
     profile: bool = False
-__all__ = ["PriceTransformer", "TrainConfig"]
+    lr_warmup_steps: int = 500  # warmup steps before cosine annealing
+    lr_min: float = 1e-6  # minimum LR for cosine annealing
+    horizons: List[int] = field(default_factory=lambda: DEFAULT_HORIZONS.copy())
+__all__ = ["PriceTransformer", "TrainConfig", "DEFAULT_HORIZONS"]

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,7 @@ _STRATEGY_SCHEMA = {
             ],
         },
         "params": {"type": "object"},
+        "horizon": {"type": "string"},
     },
 }
 
@@ -126,4 +128,12 @@ def make_strategy(cfg: Dict[str, Any]) -> "BaseStrategy":
     cls = strategy_map.get(cfg["type"])
     if cls is None:
         raise ValueError(f"Unknown strategy type: {cfg['type']}")
-    return cls(**cfg.get("params", {}))
+
+    horizon = cfg.get("horizon", "1d")
+    params = cfg.get("params", {})
+    # Generate a 5-char unique tag from name + type + horizon + params
+    digest = hashlib.md5(
+        f"{cfg['name']}:{cfg['type']}:{horizon}:{json.dumps(params, sort_keys=True)}".encode()
+    ).hexdigest()[:5]
+
+    return cls(name=cfg["name"], horizon=horizon, tag=digest, **params)

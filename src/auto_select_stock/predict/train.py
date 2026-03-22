@@ -1,3 +1,4 @@
+import math
 import random
 import time
 import dataclasses
@@ -17,11 +18,60 @@ except Exception:  # noqa: BLE001
     tqdm = None
 
 from ..config import DATA_DIR, MODEL_DIR, PREPROCESSED_DIR, REPORT_DIR
+
+
+def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
+    """
+    Pairwise ranking loss (margin-based pairwise Hinge loss).
+
+    For each pair of samples in the batch where one stock outperformed the other,
+    penalize the model if it assigns a higher predicted score to the worse performer.
+
+    pred_reg: (batch, seq_len) - predicted log returns at each step
+    y_reg: (batch, seq_len) - actual log returns at each step
+    Uses the last timestep prediction for ranking.
+    """
+    batch_size = pred_reg.size(0)
+    if batch_size < 2:
+        return torch.tensor(0.0, device=pred_reg.device, dtype=pred_reg.dtype)
+
+    # Use last timestep predictions
+    pred_last = pred_reg[:, -1]  # (batch,)
+    y_last = y_reg[:, -1]        # (batch,)
+
+    # Create all pairs: i outperforms j if y_last[i] > y_last[j]
+    # Loss = max(0, margin - (pred_last[i] - pred_last[j])) when y[i] > y[j]
+    # i.e., penalize if pred[i] <= pred[j] + margin when y[i] > y[j]
+
+    # Efficient pairwise computation
+    # pred_diff[i,j] = pred_last[i] - pred_last[j]
+    # y_outperform[i,j] = 1 if y_last[i] > y_last[j], else 0
+    pred_i = pred_last.unsqueeze(1)    # (batch, 1)
+    pred_j = pred_last.unsqueeze(0)    # (1, batch)
+    y_i = y_last.unsqueeze(1)
+    y_j = y_last.unsqueeze(0)
+
+    # Only consider cases where i actually outperforms j
+    outperform_mask = (y_i > y_j).float()  # (batch, batch)
+    # Don't penalize diagonal (i==j)
+    diag_mask = torch.eye(batch_size, device=pred_reg.device, dtype=torch.float)
+    outperform_mask = outperform_mask * (1 - diag_mask)
+
+    pred_diff = pred_i - pred_j  # (batch, batch): positive means i ranked higher
+    # Loss: margin - pred_diff, clamped at 0, only where i outperforms j
+    pair_loss = torch.clamp_min(margin - pred_diff, 0.0)
+    # Only count pairs where i outperforms j
+    ranking_loss = (pair_loss * outperform_mask).sum() / torch.clamp_min(outperform_mask.sum(), 1.0)
+
+    return ranking_loss
+
+
 from ..torch_model import PriceTransformer, TrainConfig
 from .checkpoints import load_training_checkpoint, save_checkpoint
 from .data import (
     FINANCIAL_FEATURE_COLUMNS,
     PRICE_FEATURE_COLUMNS,
+    TECHNICAL_FEATURE_COLUMNS,
     all_financial_columns,
     prepare_date_window_datasets,
     prepare_datasets,
@@ -35,30 +85,59 @@ def _device(cfg: TrainConfig) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def evaluate(model: nn.Module, loader: DataLoader, loss_fn_reg, loss_fn_cls, cfg: TrainConfig, device: torch.device) -> Tuple[float, float, float]:
+def evaluate(model: nn.Module, loader: DataLoader, loss_fn_reg, loss_fn_cls, cfg: TrainConfig, device: torch.device) -> Tuple[float, float, float, float]:
     model.eval()
     total_loss = 0.0
     total_reg_loss = 0.0
     total_cls_loss = 0.0
+    total_rank_loss = 0.0
     total_last_mae = 0.0
     steps = 0
     with torch.no_grad():
-        for x, y_reg, y_cls in loader:
+        for x, y_reg_or_dict, y_cls in loader:
             x = x.to(device)
-            y_reg = y_reg.to(device)
             y_cls = y_cls.to(device)
-            pred_reg, pred_cls = model(x)
-            reg_loss = loss_fn_reg(pred_reg, y_reg)
-            cls_loss = loss_fn_cls(pred_cls, y_cls)
-            loss = cfg.lambda_reg * reg_loss + cfg.lambda_cls * cls_loss
-            total_loss += loss.item()
-            total_reg_loss += reg_loss.item()
-            total_cls_loss += cls_loss.item()
-            total_last_mae += torch.mean(torch.abs(pred_reg[:, -1] - y_reg[:, -1])).item()
+            out = model(x)
+            # Handle both single-head (2 outputs) and multi-head (4 outputs)
+            if len(out) == 4:
+                pred_reg, pred_cls, pred_reg_all, pred_cls_all = out
+                # Multi-horizon: average over horizons
+                total_reg_h = 0.0
+                total_cls_h = 0.0
+                total_rank_h = 0.0
+                for h_idx, h in enumerate(cfg.horizons):
+                    y_reg_h = y_reg_or_dict[h].to(device)
+                    pred_reg_h = pred_reg_all[h_idx]
+                    min_len = min(pred_reg_h.shape[-1], y_reg_h.shape[-1])
+                    total_reg_h += loss_fn_reg(pred_reg_h[:, :min_len], y_reg_h[:, :min_len]).item()
+                    total_cls_h += loss_fn_cls(pred_cls_all[h_idx][:, :min_len], y_cls[:, :min_len]).item()
+                    total_rank_h += _compute_ranking_loss(pred_reg_h[:, -1:], y_reg_h[:, -1:]).item()
+                reg_loss = total_reg_h / len(cfg.horizons)
+                cls_loss = total_cls_h / len(cfg.horizons)
+                rank_loss = total_rank_h / len(cfg.horizons)
+                # MAE on 1d horizon (last timestep)
+                y_reg_1d = y_reg_or_dict.get(1, y_reg_or_dict[cfg.horizons[0]]).to(device)
+                total_last_mae += torch.mean(torch.abs(pred_reg_all[0, :, -1] - y_reg_1d[:, -1])).item()
+            else:
+                # Backward compat: single-head
+                pred_reg, pred_cls = out
+                y_reg = y_reg_or_dict.to(device)
+                reg_loss = loss_fn_reg(pred_reg, y_reg).item()
+                cls_loss = loss_fn_cls(pred_cls, y_cls).item()
+                rank_loss = _compute_ranking_loss(pred_reg, y_reg).item()
+                total_last_mae += torch.mean(torch.abs(pred_reg[:, -1] - y_reg[:, -1])).item()
+            lambda_reg = getattr(cfg, "lambda_reg", 0.1)
+            lambda_cls = getattr(cfg, "lambda_cls", 10.0)
+            lambda_rank = getattr(cfg, "lambda_rank", 1.0)
+            loss_val = lambda_reg * reg_loss + lambda_cls * cls_loss + lambda_rank * rank_loss
+            total_loss += loss_val
+            total_reg_loss += reg_loss
+            total_cls_loss += cls_loss
+            total_rank_loss += rank_loss
             steps += 1
     if steps == 0:
-        return float("inf"), float("inf"), float("inf")
-    return total_loss / steps, total_last_mae / steps, total_reg_loss / steps
+        return float("inf"), float("inf"), float("inf"), float("inf")
+    return total_loss / steps, total_last_mae / steps, total_reg_loss / steps, total_rank_loss / steps
 
 
 def _progress_iterator(loader: DataLoader, epoch: int):
@@ -133,6 +212,24 @@ def _time_block(name: str):
         print(f"[Timing] {name} finished in {elapsed:.2f}s")
 
 
+def collate_multi_horizon(batch):
+    """Collate function for multi-horizon dataset: packs y_reg_dict into padded tensors."""
+    x = torch.stack([b[0] for b in batch])
+    y_cls = torch.stack([b[2] for b in batch])
+    # y_reg_dict: {h: array} where each array has shape (seq_len - h,)
+    # Pad each horizon to the same length (max across batch)
+    y_reg_dict_packed: Dict[int, torch.Tensor] = {}
+    horizons = batch[0][1].keys()
+    for h in horizons:
+        max_len = max(b[1][h].shape[0] for b in batch)
+        padded = np.zeros((len(batch), max_len), dtype=np.float32)
+        for i, b in enumerate(batch):
+            l = b[1][h].shape[0]
+            padded[i, :l] = b[1][h]
+        y_reg_dict_packed[h] = torch.tensor(padded, dtype=torch.float32)
+    return x, y_reg_dict_packed, y_cls
+
+
 def train_transformer(
     train_ds: Dataset,
     val_ds: Dataset,
@@ -142,7 +239,9 @@ def train_transformer(
     test_ds: Optional[Dataset] = None,
 ) -> Dict[str, float]:
     device = _device(cfg)
-    feature_columns = cfg.price_columns + cfg.financial_columns
+    if cfg.technical_columns is None:
+        cfg.technical_columns = TECHNICAL_FEATURE_COLUMNS
+    feature_columns = cfg.price_columns + cfg.financial_columns + cfg.technical_columns
     if not hasattr(cfg, "exact_resume"):
         cfg.exact_resume = True
     if getattr(cfg, "base_seed", None) is None:
@@ -154,17 +253,29 @@ def train_transformer(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(base_seed)
     try:
-        model = PriceTransformer(input_dim=len(feature_columns)).to(device)
+        model = PriceTransformer(input_dim=len(feature_columns), horizons=cfg.horizons).to(device)
     except RuntimeError as exc:
         msg = str(exc)
         if device.type == "cuda" and ("cudaGetDeviceCount" in msg or "out of memory" in msg.lower()):
             # Gracefully fall back to CPU when CUDA cannot be initialized.
             print(f"[Device] CUDA init failed ({msg}); falling back to CPU")
             device = torch.device("cpu")
-            model = PriceTransformer(input_dim=len(feature_columns)).to(device)
+            model = PriceTransformer(input_dim=len(feature_columns), horizons=cfg.horizons).to(device)
         else:
             raise
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=getattr(cfg, "weight_decay", 0.0))
+    # Cosine annealing with warmup scheduler
+    total_steps = cfg.epochs * len(train_ds) // cfg.batch_size
+    warmup_steps = getattr(cfg, "lr_warmup_steps", 500)
+    lr_min = getattr(cfg, "lr_min", 1e-6)
+
+    def _lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return float(step) / max(1, warmup_steps)
+        progress = float(step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return lr_min / cfg.lr + (1 - lr_min / cfg.lr) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
     loss_fn_reg = nn.MSELoss()
     loss_fn_cls = nn.BCEWithLogitsLoss()
     best_val = float("inf")
@@ -196,8 +307,8 @@ def train_transformer(
         global_step = int(resume.get("global_step", 0))
         samples_seen = int(resume.get("samples_seen", 0))
 
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
-    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers) if test_ds else None
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, collate_fn=collate_multi_horizon)
+    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, collate_fn=collate_multi_horizon) if test_ds else None
 
     stats = {"best_val_loss": float("inf"), "best_val_last_mae": float("inf"), "best_val_reg_loss": float("inf")}
     if resume and isinstance(resume.get("metrics"), dict):
@@ -224,6 +335,7 @@ def train_transformer(
             shuffle=True,
             num_workers=cfg.num_workers,
             generator=generator,
+            collate_fn=collate_multi_horizon,
         )
         progress, total_batches = _progress_iterator(train_loader, epoch)
         progress_iter = iter(progress)
@@ -243,10 +355,9 @@ def train_transformer(
             resume_pending = False
         start_batch_idx = skip_batches + 1
 
-        for batch_idx, (x, y_reg, y_cls) in enumerate(progress_iter, start_batch_idx):
+        for batch_idx, (x, y_reg_or_dict, y_cls) in enumerate(progress_iter, start_batch_idx):
             batch_start = time.time()
             x = x.to(device)
-            y_reg = y_reg.to(device)
             y_cls = y_cls.to(device)
 
             profile_this_step = profile_enabled and batch_idx == 2
@@ -270,14 +381,44 @@ def train_transformer(
 
             with profile_ctx as prof:
                 optimizer.zero_grad()
-                pred_reg, pred_cls = model(x)
-                reg_loss = loss_fn_reg(pred_reg, y_reg)
-                cls_loss = loss_fn_cls(pred_cls, y_cls)
-                loss = cfg.lambda_reg * reg_loss + cfg.lambda_cls * cls_loss
+                out = model(x)
+                # Multi-head model returns 4 tensors; single-head returns 2
+                if len(out) == 4:
+                    pred_reg, pred_cls, pred_reg_all, pred_cls_all = out
+                    # Sum losses across all horizons
+                    total_reg_loss = 0.0
+                    total_cls_loss = 0.0
+                    total_rank_loss = 0.0
+                    for h_idx, h in enumerate(cfg.horizons):
+                        y_reg_h = y_reg_or_dict[h].to(device)  # (batch, seq_len - h)
+                        pred_reg_h = pred_reg_all[h_idx]  # (batch, seq_len)
+                        # Align: use first (seq_len - h) predictions
+                        min_len = min(pred_reg_h.shape[-1], y_reg_h.shape[-1])
+                        total_reg_loss += loss_fn_reg(pred_reg_h[:, :min_len], y_reg_h[:, :min_len])
+                        # cls head: align targets to min_len
+                        pred_cls_h = pred_cls_all[h_idx]
+                        total_cls_loss += loss_fn_cls(pred_cls_h[:, :min_len], y_cls[:, :min_len])
+                        # Ranking loss from last timestep of each horizon
+                        total_rank_loss += _compute_ranking_loss(pred_reg_h[:, -1:], y_reg_h[:, -1:])
+                    reg_loss = total_reg_loss / len(cfg.horizons)
+                    cls_loss = total_cls_loss / len(cfg.horizons)
+                    rank_loss = total_rank_loss / len(cfg.horizons)
+                else:
+                    # Backward compat: single-head model
+                    y_reg = y_reg_or_dict.to(device)
+                    pred_reg, pred_cls = out
+                    reg_loss = loss_fn_reg(pred_reg, y_reg)
+                    cls_loss = loss_fn_cls(pred_cls, y_cls)
+                    rank_loss = _compute_ranking_loss(pred_reg, y_reg)
+                lambda_reg = getattr(cfg, "lambda_reg", 0.1)
+                lambda_cls = getattr(cfg, "lambda_cls", 10.0)
+                lambda_rank = getattr(cfg, "lambda_rank", 1.0)
+                loss = lambda_reg * reg_loss + lambda_cls * cls_loss + lambda_rank * rank_loss
                 loss.backward()
                 if getattr(cfg, "grad_clip", 0.0) and cfg.grad_clip > 0:
                     clip_grad_norm_(model.parameters(), max_norm=cfg.grad_clip)
                 optimizer.step()
+                scheduler.step()
 
             running_loss += loss.item()
             steps += 1
@@ -290,6 +431,7 @@ def train_transformer(
                         "loss": f"{loss.item():.6f}",
                         "reg": f"{reg_loss.item():.6f}",
                         "cls": f"{cls_loss.item():.6f}",
+                        "rank": f"{rank_loss.item():.6f}",
                     },
                     refresh=False,
                 )
@@ -297,7 +439,7 @@ def train_transformer(
                 if batch_idx == total_batches or batch_idx % max(1, total_batches // 5) == 0:
                     print(
                         f"\r[Epoch {epoch}] progress {batch_idx}/{total_batches} loss={loss.item():.4f} "
-                        f"reg={reg_loss.item():.4f} cls={cls_loss.item():.4f}",
+                        f"reg={reg_loss.item():.4f} cls={cls_loss.item():.4f} rank={rank_loss.item():.4f}",
                         end="",
                         flush=True,
                     )
@@ -310,6 +452,8 @@ def train_transformer(
                         "train/loss": loss.item(),
                         "train/reg_loss": reg_loss.item(),
                         "train/cls_loss": cls_loss.item(),
+                        "train/rank_loss": rank_loss.item(),
+                        "train/lr": optimizer.param_groups[0]["lr"],
                         "train/samples": samples_seen,
                         "train/samples_per_sec": samples_per_sec,
                         "time/elapsed_sec": wall_elapsed,
@@ -339,7 +483,7 @@ def train_transformer(
         if tqdm is None and total_batches:
             print()
         if epoch % cfg.eval_every == 0:
-            val_loss, val_last_mae, val_reg_loss = evaluate(model, val_loader, loss_fn_reg, loss_fn_cls, cfg, device)
+            val_loss, val_last_mae, val_reg_loss, val_rank_loss = evaluate(model, val_loader, loss_fn_reg, loss_fn_cls, cfg, device)
             if val_loss < best_val:
                 best_val = val_loss
                 stats["best_val_loss"] = val_loss
@@ -362,6 +506,7 @@ def train_transformer(
                             "train/epoch_reg_loss": running_loss / max(1, steps),  # same as train_loss components summed
                             "val/loss": val_loss,
                             "val/reg_loss": val_reg_loss,
+                            "val/rank_loss": val_rank_loss,
                             "val/last_mae": val_last_mae,
                             "epoch": epoch,
                         },
@@ -369,19 +514,20 @@ def train_transformer(
                     )
             print(
                 f"[Epoch {epoch}] train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
-                f"val_reg={val_reg_loss:.6f} val_last_mae={val_last_mae:.6f} "
+                f"val_reg={val_reg_loss:.6f} val_rank={val_rank_loss:.6f} val_last_mae={val_last_mae:.6f} "
                 f"device={device.type} epoch_time={epoch_time:.2f}s"
             )
         else:
             print(f"[Epoch {epoch}] train_loss={train_loss:.6f} device={device.type} epoch_time={epoch_time:.2f}s")
 
     if test_loader:
-        test_loss, test_last_mae, test_reg_loss = evaluate(model, test_loader, loss_fn_reg, loss_fn_cls, cfg, device)
+        test_loss, test_last_mae, test_reg_loss, test_rank_loss = evaluate(model, test_loader, loss_fn_reg, loss_fn_cls, cfg, device)
         stats["test_loss"] = test_loss
         stats["test_last_mae"] = test_last_mae
         stats["test_reg_loss"] = test_reg_loss
+        stats["test_rank_loss"] = test_rank_loss
         print(
-            f"[Test] loss={test_loss:.6f} reg_loss={test_reg_loss:.6f} last_mae={test_last_mae:.6f} samples={len(test_ds)}"
+            f"[Test] loss={test_loss:.6f} reg_loss={test_reg_loss:.6f} rank_loss={test_rank_loss:.6f} last_mae={test_last_mae:.6f} samples={len(test_ds)}"
         )
 
     return stats
@@ -398,9 +544,7 @@ def train_from_symbols(
     cfg.price_columns = price_cols
     cfg.financial_columns = fin_cols
     parsed_windows: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
-    # 默认窗口：只训练窗口1（最早→2022-01-01 训练，2022-2023 验证，之后测试）。
-    default_windows = ["2022-01-01:2023-01-01"]
-    raw_windows = getattr(cfg, "date_windows", []) or default_windows
+    raw_windows = getattr(cfg, "date_windows", [])
     if raw_windows:
         parsed_windows = _parse_date_window_strings(raw_windows)
         window_text = ", ".join([f"{tr.date()}->{val.date()}" for tr, val in parsed_windows])
@@ -409,13 +553,18 @@ def train_from_symbols(
         if not hasattr(cfg, attr):
             setattr(cfg, attr, default)
     keep_in_memory = getattr(cfg, "keep_preprocessed_in_memory", False)
+    tech_cols = TECHNICAL_FEATURE_COLUMNS
+    if cfg.technical_columns is None:
+        cfg.technical_columns = tech_cols
+    total_features = len(price_cols) + len(fin_cols) + len(tech_cols)
     # Compute model parameter count early for visibility
-    tmp_model = PriceTransformer(input_dim=len(price_cols) + len(fin_cols))
+    tmp_model = PriceTransformer(input_dim=total_features, horizons=cfg.horizons)
     param_count = sum(p.numel() for p in tmp_model.parameters()) / 1e6
     print(
         f"[Train] symbols={len(symbols)} seq_len={cfg.seq_len} batch_size={cfg.batch_size} "
         f"stride={cfg.window_stride} epochs={cfg.epochs} device={cfg.device or 'auto'} "
-        f"price_cols={len(price_cols)} fin_cols={len(fin_cols)} params={param_count:.2f}M"
+        f"price_cols={len(price_cols)} fin_cols={len(fin_cols)} tech_cols={len(tech_cols)} "
+        f"total={total_features} params={param_count:.2f}M"
     )
     resume_state: Optional[Dict[str, object]] = None
     resume_scaler: Optional[Dict[str, np.ndarray]] = None
@@ -474,6 +623,7 @@ def train_from_symbols(
                 preloaded_features=preprocessed,
                 existing_scaler=scaler_for_windows,
                 target_mode=getattr(cfg, "target_mode", "log_return"),
+                horizons=cfg.horizons,
             )
         else:
             train_ds, val_ds, scaler, feature_columns = prepare_datasets(
@@ -488,6 +638,7 @@ def train_from_symbols(
                 preloaded_features=preprocessed,
                 existing_scaler=resume_scaler,
                 target_mode=getattr(cfg, "target_mode", "log_return"),
+                horizons=cfg.horizons,
             )
     if parsed_windows:
         results: Dict[str, Dict[str, float]] = {}

@@ -13,6 +13,8 @@ from torch.utils.data import Dataset
 from ..config import DATA_DIR, PREPROCESSED_DIR
 from ..financial_dates import infer_publish_dates
 from ..storage import load_financial, load_stock_history
+# Default horizons for multi-horizon prediction
+DEFAULT_HORIZONS = [1, 3, 5, 7, 14, 20]
 
 PRICE_FEATURE_COLUMNS = [
     "open",
@@ -39,8 +41,169 @@ FINANCIAL_FEATURE_COLUMNS = [
 ]
 DEFAULT_FEATURE_COLUMNS = PRICE_FEATURE_COLUMNS + FINANCIAL_FEATURE_COLUMNS
 TARGET_COLUMN = "close"
-_PREPROCESS_VERSION = 2
-_DATASET_CACHE_VERSION = 2
+_PREPROCESS_VERSION = 3  # Bumped to include technical indicators
+_DATASET_CACHE_VERSION = 3
+
+# Technical indicator feature columns - computed from price data (no lookahead)
+TECHNICAL_FEATURE_COLUMNS = [
+    "rsi_14",       # Relative Strength Index (14-day)
+    "macd_line",    # MACD line (EMA12 - EMA26)
+    "macd_signal",  # MACD signal line (9-day EMA of MACD)
+    "macd_hist",    # MACD histogram (MACD - Signal)
+    "bb_position",  # Bollinger Band position (0-1, price's position in bands)
+    "bb_width",     # Bollinger Band width (normalized)
+    "volume_ma5",   # Volume MA5 ratio
+    "volume_ma20",  # Volume MA20 ratio
+    "atr_14",       # Average True Range (14-day)
+    "stoch_k",      # Stochastic %K
+    "stoch_d",      # Stochastic %D
+    "obv_ma10",    # OBV MA10 ratio
+    "roc_10",       # Rate of change (10-day)
+    "momentum_10",  # Momentum (10-day)
+]
+
+
+def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute technical indicators from price DataFrame.
+    All indicators use only past data (no lookahead).
+    """
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+    volume = df["volume"].values
+    n = len(close)
+
+    result = pd.DataFrame(index=df.index)
+
+    # RSI-14
+    delta = np.diff(close, prepend=close[0])
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    avg_gain = np.zeros(n)
+    avg_loss = np.zeros(n)
+    # Use SMA for first 14 values, then EMA
+    if n >= 14:
+        avg_gain[13] = np.mean(gain[1:15])
+        avg_loss[13] = np.mean(loss[1:15])
+        for i in range(14, n):
+            avg_gain[i] = (avg_gain[i-1] * 13 + gain[i]) / 14
+            avg_loss[i] = (avg_loss[i-1] * 13 + loss[i]) / 14
+    rs = np.zeros(n)
+    valid = avg_loss > 0
+    rs[valid] = avg_gain[valid] / avg_loss[valid]
+    result["rsi_14"] = np.where(n > 0, 100 - (100 / (1 + rs)), 50)
+
+    # MACD (12, 26, 9)
+    ema12 = _ema(close, 12)
+    ema26 = _ema(close, 26)
+    macd_line = ema12 - ema26
+    result["macd_line"] = macd_line
+    result["macd_signal"] = _ema(macd_line, 9)
+    result["macd_hist"] = macd_line - _ema(macd_line, 9)
+
+    # Bollinger Bands (20-day, 2 std)
+    ma20 = _sma(close, 20)
+    std20 = _running_std(close, 20)
+    bb_upper = ma20 + 2 * std20
+    bb_lower = ma20 - 2 * std20
+    result["bb_position"] = np.where(bb_upper != bb_lower, (close - bb_lower) / (bb_upper - bb_lower), 0.5)
+    result["bb_width"] = np.where(ma20 != 0, (bb_upper - bb_lower) / ma20, 0)
+
+    # Volume MA ratios
+    vol_ma5 = _sma(volume, 5)
+    vol_ma20 = _sma(volume, 20)
+    result["volume_ma5"] = np.where(vol_ma5 > 0, volume / vol_ma5, 1.0)
+    result["volume_ma20"] = np.where(vol_ma20 > 0, volume / vol_ma20, 1.0)
+
+    # ATR-14
+    tr = np.zeros(n)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        tr[i] = max(high[i] - low[i], max(abs(high[i] - close[i-1]), abs(low[i] - close[i-1])))
+    result["atr_14"] = _ema(tr, 14)
+
+    # Stochastic %K and %D (14-day)
+    lowest_low = _rolling_min(low, 14)
+    highest_high = _rolling_max(high, 14)
+    stoch_k = np.where(highest_high != lowest_low, 100 * (close - lowest_low) / (highest_high - lowest_low), 50)
+    result["stoch_k"] = stoch_k
+    result["stoch_d"] = _sma(stoch_k, 3)
+
+    # OBV MA10 ratio
+    obv = np.zeros(n)
+    obv[0] = volume[0]
+    for i in range(1, n):
+        obv[i] = obv[i-1] + (volume[i] if close[i] > close[i-1] else -volume[i] if close[i] < close[i-1] else 0)
+    result["obv_ma10"] = np.where(n > 0, obv / (_sma(obv, 10) + 1e-10), 1.0)
+
+    # ROC and Momentum (10-day)
+    result["roc_10"] = np.where(close > 0, (close - np.roll(close, 10)) / np.roll(close, 10) * 100, 0)
+    result["momentum_10"] = np.roll(close, 10) - close
+    result.loc[:9, "roc_10"] = 0
+    result.loc[:9, "momentum_10"] = 0
+
+    # Replace NaN/Inf with 0
+    result = result.replace([np.inf, -np.inf], 0).fillna(0)
+
+    return result
+
+
+def _ema(series: np.ndarray, span: int) -> np.ndarray:
+    """Exponential moving average."""
+    n = len(series)
+    result = np.zeros(n)
+    alpha = 2.0 / (span + 1)
+    result[0] = series[0]
+    for i in range(1, n):
+        result[i] = alpha * series[i] + (1 - alpha) * result[i-1]
+    return result
+
+
+def _sma(series: np.ndarray, window: int) -> np.ndarray:
+    """Simple moving average with same-length initial values."""
+    n = len(series)
+    result = np.zeros(n)
+    for i in range(n):
+        if i < window - 1:
+            result[i] = np.mean(series[:i+1]) if i > 0 else series[0]
+        else:
+            result[i] = np.mean(series[i-window+1:i+1])
+    return result
+
+
+def _running_std(series: np.ndarray, window: int) -> np.ndarray:
+    """Running standard deviation with same-length initial values."""
+    n = len(series)
+    result = np.zeros(n)
+    for i in range(n):
+        if i < window - 1:
+            result[i] = np.std(series[:i+1]) if i > 0 else 0
+        else:
+            result[i] = np.std(series[i-window+1:i+1])
+    return result
+
+
+def _rolling_max(series: np.ndarray, window: int) -> np.ndarray:
+    """Rolling maximum."""
+    n = len(series)
+    result = np.full(n, series[0])
+    for i in range(1, min(window, n)):
+        result[i] = max(result[i-1], series[i])
+    for i in range(window, n):
+        result[i] = max(series[i-window+1:i+1])
+    return result
+
+
+def _rolling_min(series: np.ndarray, window: int) -> np.ndarray:
+    """Rolling minimum."""
+    n = len(series)
+    result = np.full(n, series[0])
+    for i in range(1, min(window, n)):
+        result[i] = min(result[i-1], series[i])
+    for i in range(window, n):
+        result[i] = min(series[i-window+1:i+1])
+    return result
 
 
 def close_index(feature_columns: Sequence[str]) -> int:
@@ -160,10 +323,12 @@ class StreamingPriceDataset(Dataset):
         source_mtime: Optional[float] = None,
         cache_size: int = 8,
         target_mode: str = "log_return",
+        horizons: Optional[List[int]] = None,
     ):
         self.seq_len = seq_len
         self.stride = max(1, int(stride))
         self.close_index = close_index
+        self.horizons = horizons if horizons is not None else DEFAULT_HORIZONS
         self.price_columns = price_columns
         self.financial_columns = financial_columns
         self.base_dir = base_dir
@@ -254,15 +419,19 @@ class StreamingPriceDataset(Dataset):
         raw_window = raw_feats[start : start + self.seq_len + 1]
         x = window[:-1]
         close = raw_window[:, self.close_index]
-        if self.target_mode == "log_return":
-            ret = np.log(close[1:] / np.clip(close[:-1], 1e-6, None))
-            y_reg = ret
-        else:
-            y_reg = window[1:, self.close_index]
+        # Multi-horizon targets: y_reg_dict[h] = h-day target array
+        y_reg_dict: Dict[int, np.ndarray] = {}
+        for h in self.horizons:
+            if self.target_mode == "log_return":
+                ret = np.log(close[h:] / np.clip(close[:-h], 1e-6, None))
+                y_reg_dict[h] = ret
+            else:
+                y_reg_dict[h] = window[h:, self.close_index]
+        # y_cls is still next-day direction (1d)
         y_cls = (close[1:] > close[:-1]).astype("float32")
         return (
             torch.tensor(x, dtype=torch.float32),
-            torch.tensor(y_reg, dtype=torch.float32),
+            y_reg_dict,
             torch.tensor(y_cls, dtype=torch.float32),
         )
 
@@ -329,6 +498,7 @@ def load_feature_matrix(
     price_columns: List[str],
     financial_columns: List[str],
     base_dir: Path = DATA_DIR,
+    include_technical: bool = True,
 ) -> np.ndarray:
     arr = load_stock_history(symbol, base_dir=base_dir)
     df = pd.DataFrame(arr)
@@ -337,7 +507,12 @@ def load_feature_matrix(
     price_features = df[price_columns].astype("float32").to_numpy()
     fin_df = _load_financial_frame(symbol, financial_columns, base_dir=base_dir)
     fin_features = _merge_price_financial(df, fin_df, financial_columns)
-    return np.concatenate([price_features, fin_features], axis=1)
+    base_features = np.concatenate([price_features, fin_features], axis=1)
+    if not include_technical:
+        return base_features
+    tech_df = compute_technical_indicators(df)
+    tech_features = tech_df[TECHNICAL_FEATURE_COLUMNS].astype("float32").to_numpy()
+    return np.concatenate([base_features, tech_features], axis=1)
 
 
 def compute_scaler(train_features: Iterable[np.ndarray]) -> Dict[str, np.ndarray]:
@@ -585,6 +760,7 @@ def prepare_date_window_datasets(
     preloaded_features: Optional[Dict[str, np.ndarray]] = None,
     existing_scaler: Optional[Dict[str, np.ndarray]] = None,
     target_mode: str = "log_return",
+    horizons: Optional[List[int]] = None,
 ) -> List[DatasetWindow]:
     """
     Build datasets for multiple chronological windows defined by train_end/val_end.
@@ -699,6 +875,7 @@ def prepare_date_window_datasets(
             preloaded_features=preloaded_features,
             source_mtime=source_mtime,
             target_mode=target_mode,
+            horizons=horizons,
         )
         train_len = len(train_ds)
         val_ds = StreamingPriceDataset(
@@ -715,6 +892,7 @@ def prepare_date_window_datasets(
             preloaded_features=preloaded_features,
             source_mtime=source_mtime,
             target_mode=target_mode,
+            horizons=horizons,
         )
         val_len = len(val_ds)
         test_ds = StreamingPriceDataset(
@@ -731,6 +909,7 @@ def prepare_date_window_datasets(
             preloaded_features=preloaded_features,
             source_mtime=source_mtime,
             target_mode=target_mode,
+            horizons=horizons,
         )
         test_ds = test_ds if len(test_ds) > 0 else None
         name = f"{state['train_end'].date()}_{state['val_end'].date()}"
@@ -772,6 +951,7 @@ def prepare_datasets(
     preloaded_features: Optional[Dict[str, np.ndarray]] = None,
     existing_scaler: Optional[Dict[str, np.ndarray]] = None,
     target_mode: str = "log_return",
+    horizons: Optional[List[int]] = None,
 ) -> Tuple[StreamingPriceDataset, StreamingPriceDataset, Dict[str, np.ndarray], List[str]]:
     price_cols = price_columns or PRICE_FEATURE_COLUMNS
     fin_cols = financial_columns or all_financial_columns(base_dir)
@@ -866,6 +1046,7 @@ def prepare_datasets(
         preloaded_features=preloaded_features,
         source_mtime=source_mtime,
         target_mode=target_mode,
+        horizons=horizons,
     )
     val_ds = StreamingPriceDataset(
         splits,
@@ -881,6 +1062,7 @@ def prepare_datasets(
         preloaded_features=preloaded_features,
         source_mtime=source_mtime,
         target_mode=target_mode,
+        horizons=horizons,
     )
     print(
         f"[Dataset] symbols={len(splits)} train_samples={len(train_ds)} val_samples={len(val_ds)} "

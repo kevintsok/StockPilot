@@ -1,13 +1,13 @@
 import math
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from ..config import DATA_DIR
-from ..torch_model import PriceTransformer, TrainConfig
-from .data import close_index, load_feature_matrix
+from ..torch_model import DEFAULT_HORIZONS, PriceTransformer, TrainConfig
+from .data import TECHNICAL_FEATURE_COLUMNS, close_index, load_feature_matrix
 
 
 def load_model(
@@ -26,10 +26,16 @@ def load_model(
     if not hasattr(cfg, "grad_clip"):
         cfg.grad_clip = 0.0
     if not hasattr(cfg, "lambda_reg"):
-        cfg.lambda_reg = 1.0
+        cfg.lambda_reg = 0.1  # new default (was 1000)
     if not hasattr(cfg, "lambda_cls"):
-        cfg.lambda_cls = 1.0
-    feature_columns = cfg.price_columns + cfg.financial_columns
+        cfg.lambda_cls = 10.0  # new default (was 1.0)
+    if not hasattr(cfg, "lambda_rank"):
+        cfg.lambda_rank = 1.0
+    if not hasattr(cfg, "horizons"):
+        cfg.horizons = DEFAULT_HORIZONS.copy()
+    # Reconstruct feature columns including technical features
+    tech_cols = getattr(cfg, "technical_columns", None) or TECHNICAL_FEATURE_COLUMNS
+    feature_columns = cfg.price_columns + cfg.financial_columns + tech_cols
     state_dict = payload["model_state"]
     d_model = state_dict["input_proj.weight"].shape[0]
     dim_feedforward = state_dict.get("encoder.layers.0.linear1.weight", torch.empty(0)).shape[0] or 256
@@ -50,14 +56,40 @@ def load_model(
                 nhead = candidate
                 break
     dropout = getattr(cfg, "dropout", 0.1)
+
+    # Check if this is a legacy single-head checkpoint
+    has_multi_head = any(k.startswith("reg_heads.") for k in state_dict.keys())
+    if has_multi_head:
+        # New multi-head format: normal load
+        horizons = cfg.horizons
+    else:
+        # Legacy single-head format: use multi-head model but will copy weights
+        horizons = cfg.horizons
+
     model = PriceTransformer(
         input_dim=len(feature_columns),
+        horizons=horizons,
         d_model=d_model,
         nhead=nhead,
         num_layers=num_layers,
         dim_feedforward=dim_feedforward,
         dropout=dropout,
     )
+
+    # Backward compat: if loading legacy single-head checkpoint into new multi-head model,
+    # copy the old head weights to all new heads
+    if not has_multi_head and "head.weight" in state_dict:
+        old_reg_weight = state_dict.pop("head.weight")
+        old_reg_bias = state_dict.pop("head.bias")
+        old_cls_weight = state_dict.pop("cls_head.weight")
+        old_cls_bias = state_dict.pop("cls_head.bias")
+        # Copy to all horizon heads
+        for i in range(len(horizons)):
+            state_dict[f"reg_heads.{i}.weight"] = old_reg_weight.clone()
+            state_dict[f"reg_heads.{i}.bias"] = old_reg_bias.clone()
+            state_dict[f"cls_heads.{i}.weight"] = old_cls_weight.clone()
+            state_dict[f"cls_heads.{i}.bias"] = old_cls_bias.clone()
+
     model.load_state_dict(state_dict, strict=False)
     model.to(target_device)
     model.eval()
@@ -76,8 +108,15 @@ class PricePredictor:
         self.model = model
         self.cfg = cfg
         self.scaler = scaler
+        self.horizons = cfg.horizons
         self.device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.feature_columns = cfg.price_columns + cfg.financial_columns
+        # Infer actual input dim from model (includes technical features if trained with them)
+        actual_input_dim = model.input_proj.weight.shape[1]
+        # Include technical features (v3 models have them)
+        self.feature_columns = cfg.price_columns + cfg.financial_columns + TECHNICAL_FEATURE_COLUMNS
+        # Trim if model was trained with fewer features (backward compat)
+        if len(self.feature_columns) > actual_input_dim:
+            self.feature_columns = self.feature_columns[:actual_input_dim]
         self.close_idx = close_index(self.feature_columns)
         self.model.to(self.device)
         self.model.eval()
@@ -95,7 +134,22 @@ class PricePredictor:
         seq_len: Optional[int] = None,
         base_dir: Path = DATA_DIR,
         features: Optional[np.ndarray] = None,
-    ) -> float:
+        horizon: Optional[Union[int, str]] = None,
+    ) -> Union[Dict[str, float], float]:
+        """
+        Run inference for a symbol.
+
+        Args:
+            symbol: stock symbol
+            seq_len: sequence length (default from config)
+            base_dir: data directory
+            features: optional pre-loaded features
+            horizon: None -> return all horizons as dict {f"{h}d": ret, ...}
+                     1/3/5/7/14/20 or "1d"/"3d"/etc -> return float for that horizon
+
+        Returns:
+            Predicted return(s) as float or dict of {horizon: return}.
+        """
         seq_len = seq_len or self.cfg.seq_len
         feats = features
         if feats is None:
@@ -123,23 +177,35 @@ class PricePredictor:
         context = normed[-seq_len:]
         x = torch.tensor(context, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            pred_seq = self.model(x)[0].detach().cpu().numpy()
-
-        # Handle batch dimension consistently; we expect shape (batch, seq_len).
-        if pred_seq.ndim == 2:
-            pred_last = float(pred_seq[0, -1])
-        elif pred_seq.ndim == 1:
-            pred_last = float(pred_seq[-1])
-        else:
-            pred_last = float(np.array(pred_seq).reshape(-1)[-1])
+            out = self.model(x)
+            # Multi-head returns 4 tensors; single-head returns 2
+            if len(out) == 4:
+                reg_all = out[2]  # (num_hor, batch=1, seq_len)
+            else:
+                reg_all = out[0].unsqueeze(0)  # wrap single head as 1-horizon
 
         mode = getattr(self.cfg, "target_mode", "close")
-        if mode == "log_return":
-            last_close = float(feats[-1, self.close_idx])
-            predicted_price = last_close * math.exp(pred_last)
-        else:
-            predicted_price = pred_last * scaler_std[self.close_idx] + scaler_mean[self.close_idx]
-        return float(predicted_price)
+        last_close = float(feats[-1, self.close_idx])
+
+        results: Dict[str, float] = {}
+        for h_idx, h in enumerate(self.horizons):
+            pred = reg_all[h_idx, 0, -1].item()  # last timestep
+            if mode == "log_return":
+                # Predicted h-day log return -> convert to simple return
+                results[f"{h}d"] = math.exp(pred) - 1.0
+            else:
+                # Predicts close price directly
+                pred_close = pred * scaler_std[self.close_idx] + scaler_mean[self.close_idx]
+                results[f"{h}d"] = float(pred_close / last_close - 1.0)
+
+        if horizon is not None:
+            # Return specific horizon as float
+            h_str = str(horizon) if isinstance(horizon, int) else horizon
+            if not h_str.endswith("d"):
+                h_str = f"{h_str}d"
+            return results.get(h_str, results.get("1d", 0.0))
+
+        return results
 
 
 def predict_next_close(
@@ -148,9 +214,10 @@ def predict_next_close(
     seq_len: Optional[int] = None,
     base_dir: Path = DATA_DIR,
     device: Optional[str] = None,
-) -> float:
+    horizon: Optional[Union[int, str]] = None,
+) -> Union[Dict[str, float], float]:
     predictor = PricePredictor(checkpoint_path, device=device)
-    return predictor.predict(symbol, seq_len=seq_len, base_dir=base_dir)
+    return predictor.predict(symbol, seq_len=seq_len, base_dir=base_dir, horizon=horizon)
 
 
 __all__ = ["PricePredictor", "predict_next_close", "load_model"]

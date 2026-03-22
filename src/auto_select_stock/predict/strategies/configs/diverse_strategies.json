@@ -1,0 +1,353 @@
+[
+  {
+    "name": "TopK-K3-1d",
+    "description": "TopK-3 1d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "1d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "5ed5b"
+  },
+  {
+    "name": "TopK-K10-1d",
+    "description": "TopK-10 1d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "1d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "3f274"
+  },
+  {
+    "name": "TopK-K3-3d",
+    "description": "TopK-3 3d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "3d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "a2b0b"
+  },
+  {
+    "name": "TopK-K10-3d",
+    "description": "TopK-10 3d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "3d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "4481d"
+  },
+  {
+    "name": "TopK-K3-5d",
+    "description": "TopK-3 5d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "5d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "2dc81"
+  },
+  {
+    "name": "TopK-K10-5d",
+    "description": "TopK-10 5d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "5d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "c2655"
+  },
+  {
+    "name": "TopK-K3-7d",
+    "description": "TopK-3 7d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "7d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "26e2a"
+  },
+  {
+    "name": "TopK-K10-7d",
+    "description": "TopK-10 7d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "7d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "d9454"
+  },
+  {
+    "name": "TopK-K3-14d",
+    "description": "TopK-3 14d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "14d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "2619a"
+  },
+  {
+    "name": "TopK-K10-14d",
+    "description": "TopK-10 14d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "14d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "c8638"
+  },
+  {
+    "name": "TopK-K3-20d",
+    "description": "TopK-3 20d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "20d",
+    "params": {
+      "top_k": 3,
+      "allow_short": false
+    },
+    "tag": "f27f2"
+  },
+  {
+    "name": "TopK-K10-20d",
+    "description": "TopK-10 20d，等权配置，纯粹做多",
+    "type": "topk",
+    "horizon": "20d",
+    "params": {
+      "top_k": 10,
+      "allow_short": false
+    },
+    "tag": "18661"
+  },
+  {
+    "name": "StopLoss-3pct-1d",
+    "description": "TopK + 追踪止损 3% 1d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.03,
+      "allow_short": false
+    },
+    "tag": "fc99f"
+  },
+  {
+    "name": "StopLoss-8pct-1d",
+    "description": "TopK + 追踪止损 8% 1d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.08,
+      "allow_short": false
+    },
+    "tag": "a1e30"
+  },
+  {
+    "name": "StopLoss-3pct-5d",
+    "description": "TopK + 追踪止损 3% 5d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.03,
+      "allow_short": false
+    },
+    "tag": "47cda"
+  },
+  {
+    "name": "StopLoss-8pct-5d",
+    "description": "TopK + 追踪止损 8% 5d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.08,
+      "allow_short": false
+    },
+    "tag": "21312"
+  },
+  {
+    "name": "StopLoss-3pct-14d",
+    "description": "TopK + 追踪止损 3% 14d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.03,
+      "allow_short": false
+    },
+    "tag": "af475"
+  },
+  {
+    "name": "StopLoss-8pct-14d",
+    "description": "TopK + 追踪止损 8% 14d，A股T+1尾市止损",
+    "type": "trailing_stop",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "stop_loss": 0.08,
+      "allow_short": false
+    },
+    "tag": "a72bb"
+  },
+  {
+    "name": "Momentum-LB5-1d",
+    "description": "TopK动量过滤，lookback=5天 1d，需超越5日均线才买入",
+    "type": "momentum_filter",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "lookback": 5,
+      "threshold": 0.0,
+      "allow_short": false
+    },
+    "tag": "7ef00"
+  },
+  {
+    "name": "Momentum-LB10-5d",
+    "description": "TopK动量过滤，lookback=10天 5d，需超越10日均线才买入",
+    "type": "momentum_filter",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "lookback": 10,
+      "threshold": 0.0,
+      "allow_short": false
+    },
+    "tag": "0f23e"
+  },
+  {
+    "name": "Momentum-LB20-14d",
+    "description": "TopK动量过滤，lookback=20天 14d，需超越20日均线才买入",
+    "type": "momentum_filter",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "lookback": 20,
+      "threshold": 0.0,
+      "allow_short": false
+    },
+    "tag": "752ef"
+  },
+  {
+    "name": "RiskParity-VL10-1d",
+    "description": "波动率倒数加权，vol_lookback=10天 1d",
+    "type": "risk_parity",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "vol_lookback": 10
+    },
+    "tag": "469da"
+  },
+  {
+    "name": "RiskParity-VL20-5d",
+    "description": "波动率倒数加权，vol_lookback=20天 5d",
+    "type": "risk_parity",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "vol_lookback": 20
+    },
+    "tag": "dfe5c"
+  },
+  {
+    "name": "RiskParity-VL30-14d",
+    "description": "波动率倒数加权，vol_lookback=30天 14d",
+    "type": "risk_parity",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "vol_lookback": 30
+    },
+    "tag": "fc224"
+  },
+  {
+    "name": "Confidence-MC5bp-1d",
+    "description": "置信度加权，最低信心度5bp 1d",
+    "type": "confidence",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "min_confidence": 0.005
+    },
+    "tag": "5f3f9"
+  },
+  {
+    "name": "Confidence-MC10bp-5d",
+    "description": "置信度加权，最低信心度10bp 5d",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "min_confidence": 0.01
+    },
+    "tag": "6cdaf"
+  },
+  {
+    "name": "Confidence-MC20bp-14d",
+    "description": "置信度加权，最低信心度20bp 14d",
+    "type": "confidence",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "allow_short": false,
+      "min_confidence": 0.02
+    },
+    "tag": "5e6ad"
+  },
+  {
+    "name": "Threshold-0pct-1d",
+    "description": "预测收益>0%才入场 1d",
+    "type": "threshold",
+    "horizon": "1d",
+    "params": {
+      "top_k": 5,
+      "threshold": 0.005,
+      "allow_short": false
+    },
+    "tag": "19888"
+  },
+  {
+    "name": "Threshold-1pct-5d",
+    "description": "预测收益>1%才入场 5d",
+    "type": "threshold",
+    "horizon": "5d",
+    "params": {
+      "top_k": 5,
+      "threshold": 0.01,
+      "allow_short": false
+    },
+    "tag": "71c4f"
+  },
+  {
+    "name": "Threshold-2pct-14d",
+    "description": "预测收益>2%才入场 14d",
+    "type": "threshold",
+    "horizon": "14d",
+    "params": {
+      "top_k": 5,
+      "threshold": 0.02,
+      "allow_short": false
+    },
+    "tag": "289f4"
+  }
+]

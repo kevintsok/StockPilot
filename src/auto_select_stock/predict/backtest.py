@@ -232,16 +232,27 @@ def _collect_signals_batched(
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
     show_progress: bool,
+    horizon: str = "1d",
 ) -> Dict[pd.Timestamp, List[Tuple[str, float, float, Optional[str]]]]:
     """
     Collect daily signals across symbols using cross-stock batching to better utilize the device.
+
+    Args:
+        horizon: prediction horizon for ranking (e.g. "1d", "5d"). Default "1d".
     """
     batch_size = max(1, getattr(cfg, "eval_batch_size", 64))
     device = predictor.device
     close_idx = predictor.close_idx
     mode = getattr(predictor.cfg, "target_mode", "close")
     industry_map = cfg.industry_map or {}
-    daily_signals: Dict[pd.Timestamp, List[Tuple[str, float, float, Optional[str]]]] = {}
+    daily_signals: Dict[pd.Timestamp, List[Tuple[str, float, float, Optional[str], Optional[Dict[str, float]]]]] = {}
+
+    # Determine which horizon index to use (for the primary pred_ret stored in tuple)
+    h_int = int(horizon.replace("d", ""))
+    if h_int in predictor.horizons:
+        h_idx = predictor.horizons.index(h_int)
+    else:
+        h_idx = 0  # fallback to 1d
 
     pending_windows: List[np.ndarray] = []
     pending_meta: List[Tuple[str, int]] = []  # (symbol, window_idx)
@@ -254,25 +265,53 @@ def _collect_signals_batched(
             return
         batch = torch.tensor(np.stack(pending_windows), dtype=torch.float32, device=device)
         with torch.inference_mode():
-            out = predictor.model(batch)[0]
-            last_step = out[:, -1]
+            out = predictor.model(batch)
+            if len(out) == 4:
+                reg_all = out[2]
+                last_step = reg_all[h_idx, :, -1]
+                all_preds = reg_all[:, :, -1].detach().cpu().numpy()
+                horizons_list = predictor.horizons
+            else:
+                last_step = out[0][:, -1]
+                all_preds = last_step.detach().cpu().numpy().reshape(1, -1)
+                horizons_list = [1]
             preds = last_step.detach().cpu().numpy().tolist()
-        for pred_last, (sym, idx) in zip(preds, pending_meta):
+        for batch_i, (pred_last, (sym, idx)) in enumerate(zip(preds, pending_meta)):
             info = cache[sym]
-            dt = pd.Timestamp(info["dates"][idx])  # trade date (context end)
-            target_dt = pd.Timestamp(info["next_dates"][idx])
-            cur_c = float(info["cur"][idx])
-            nxt_c = float(info["nxt"][idx])
-            nxt_o = float(info["nxt_open"][idx])
+            entry_c = float(info["entry_close"][idx])   # T's close (entry price)
+            exit_c = float(info["exit_close"][idx])     # T+1's close (exit price)
+            entry_o = float(info["entry_open"][idx])    # T's open (for auction check)
+            prev_c = float(info["prev_close"][idx])     # T-1's close (for auction check)
+            # Auction limit: A-share limit is ±10% from previous close
+            open_ret = entry_o / prev_c - 1.0 if prev_c > 0 else 0.0
+            auc_limit = 0  # 0=none, 1=limit_up (can't buy), -1=limit_down (can't sell)
+            if open_ret >= 0.095:      # opened at limit-up (涨停)
+                auc_limit = 1
+            elif open_ret <= -0.095:   # opened at limit-down (跌停)
+                auc_limit = -1
+            target_dt = pd.Timestamp(info["next_dates"][idx])  # T+1
             scaler_mean = info["scaler_mean"]
             scaler_std = info["scaler_std"]
             if mode == "log_return":
                 predicted_ret = math.exp(pred_last) - 1.0
+                predicted_rets = {}
+                for h_j, h in enumerate(horizons_list):
+                    p = all_preds[h_j, batch_i]
+                    predicted_rets[f"{h}d"] = math.exp(p) - 1.0
             else:
                 pred_close = pred_last * scaler_std[close_idx] + scaler_mean[close_idx]
-                predicted_ret = float(pred_close / cur_c - 1.0)
-            realized_ret = float(nxt_c / max(cur_c, 1e-6) - 1.0)
-            daily_signals.setdefault(target_dt, []).append((sym, predicted_ret, realized_ret, industry_map.get(sym)))
+                predicted_ret = float(pred_close / entry_c - 1.0)
+                predicted_rets = {}
+                for h_j, h in enumerate(horizons_list):
+                    p = all_preds[h_j, batch_i]
+                    pc = p * scaler_std[close_idx] + scaler_mean[close_idx]
+                    predicted_rets[f"{h}d"] = float(pc / entry_c - 1.0)
+            # realized_ret: entry at T's close, exit at T+1's close (proper 1-day return)
+            realized_ret = float(exit_c / max(entry_c, 1e-6) - 1.0)
+            # Signal tuple: (symbol, predicted_ret, realized_ret, industry, predicted_rets, entry_price, auc_limit)
+            daily_signals.setdefault(target_dt, []).append(
+                (sym, predicted_ret, realized_ret, industry_map.get(sym), predicted_rets, entry_c, auc_limit)
+            )
             remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
             if remaining_windows[sym] <= 0 and sym in done_symbols:
                 cache.pop(sym, None)
@@ -300,16 +339,21 @@ def _collect_signals_batched(
         if num_windows <= 0:
             continue
 
-        current_close = closes[seq_len - 1 : -1]
-        next_close = closes[seq_len:]
-        next_open = opens[seq_len:]
-        window_dates = dates[seq_len - 1 : -1]
-        next_dates = dates[seq_len:]
+        # FIX: entry price = T's close (not T-1's close).
+        # context ends at T-1 (closes[seq_len-1+idx]), model predicts close[T]/close[T-1]-1.
+        # We execute at T's close, hold to T+1 close: realized_ret = close[T+1]/close[T]-1.
+        entry_close = closes[seq_len:-1]    # close at T, shape (num_windows,)
+        exit_close = closes[seq_len + 1:]    # close at T+1, shape (num_windows,)
+        prev_close = closes[seq_len - 1:-1]  # close at T-1, shape (num_windows,) — for auction check
+        entry_open = opens[seq_len:-1]      # open at T (for auction limit check)
+        window_dates = dates[seq_len - 1 : -1]   # T date (= context end = prediction date)
+        next_dates = dates[seq_len + 1:]          # T+1 date (= target date = exit date)
 
         cache[sym] = {
-            "cur": current_close,
-            "nxt": next_close,
-            "nxt_open": next_open,
+            "entry_close": entry_close,
+            "exit_close": exit_close,
+            "prev_close": prev_close,
+            "entry_open": entry_open,
             "dates": window_dates,
             "next_dates": next_dates,
             "scaler_mean": scaler_mean,
@@ -340,7 +384,7 @@ def _collect_signals_batched(
 
 
 def run_backtest(
-    cfg: BacktestConfig, predictor: Optional[PricePredictor] = None, show_progress: bool = True
+    cfg: BacktestConfig, predictor: Optional[PricePredictor] = None, show_progress: bool = True, horizon: str = "1d"
 ) -> BacktestResult:
     start_date = _parse_date(cfg.start_date)
     end_date = _parse_date(cfg.end_date)
@@ -353,7 +397,7 @@ def run_backtest(
         raise RuntimeError("No symbols available for backtest after filtering to 沪深/创业板默认范围.")
 
     # Collect daily signals per symbol
-    daily_signals = _collect_signals_batched(symbols, predictor, cfg, start_date, end_date, show_progress)
+    daily_signals = _collect_signals_batched(symbols, predictor, cfg, start_date, end_date, show_progress, horizon=horizon)
 
     dates_sorted = sorted(daily_signals.keys())
     prev_weights: Dict[str, float] = {}
@@ -415,14 +459,14 @@ def run_backtest(
 
 
 def run_backtest_for_symbol(
-    cfg: BacktestConfig, symbol: str, predictor: Optional[PricePredictor] = None, show_progress: bool = True
+    cfg: BacktestConfig, symbol: str, predictor: Optional[PricePredictor] = None, show_progress: bool = True, horizon: str = "1d"
 ) -> Tuple[str, Dict[str, float], Optional[str]]:
     """
     Convenience wrapper to run a single-symbol backtest and return metrics or an error message.
     """
     try:
         single_cfg = replace(cfg, symbols=[symbol])
-        result = run_backtest(single_cfg, predictor=predictor, show_progress=show_progress)
+        result = run_backtest(single_cfg, predictor=predictor, show_progress=show_progress, horizon=horizon)
         return symbol, result.metrics, None
     except Exception as exc:  # noqa: BLE001
         return symbol, {}, str(exc)
@@ -433,6 +477,7 @@ def run_topk_strategy(
     top_k: int,
     predictor: Optional[PricePredictor] = None,
     show_progress: bool = True,
+    horizon: str = "1d",
 ) -> BacktestResult:
     """
     Daily workflow:
@@ -451,7 +496,7 @@ def run_topk_strategy(
     if not symbols:
         raise RuntimeError("No symbols available for strategy backtest after filtering to 沪深/创业板默认范围.")
 
-    daily_signals = _collect_signals_batched(symbols, predictor, cfg, start_date, end_date, show_progress=show_progress)
+    daily_signals = _collect_signals_batched(symbols, predictor, cfg, start_date, end_date, show_progress=show_progress, horizon=horizon)
 
     dates_sorted = sorted(daily_signals.keys())
     prev_weights: Dict[str, float] = {}

@@ -18,12 +18,14 @@ def ensure_data_dir(path: Optional[Path] = None) -> Path:
 def _connect(base_dir: Optional[Path] = None, read_only: bool = False) -> sqlite3.Connection:
     db_path = (base_dir or DATA_DIR) / "stock.db"
     if read_only:
+        if not db_path.exists():
+            raise FileNotFoundError(f"Database not found at {db_path}")
         uri = f"file:{db_path}?mode=ro&immutable=1"
         return sqlite3.connect(uri, uri=True)
     ensure_data_dir(base_dir)
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    # Disable WAL to avoid cross-environment file locking issues (WSL/Windows)
+    conn.execute("PRAGMA journal_mode=DELETE;")
     _init_db(conn)
     return conn
 
@@ -143,7 +145,10 @@ def load_stock_history(symbol: str, base_dir: Optional[Path] = None) -> np.ndarr
 
 
 def price_date_range(symbol: str, base_dir: Optional[Path] = None) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
-    conn = _connect(base_dir, read_only=True)
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return None
     cur = conn.execute("SELECT MIN(date), MAX(date) FROM price WHERE symbol=?", (symbol,))
     row = cur.fetchone()
     if not row or row[0] is None:
@@ -153,7 +158,10 @@ def price_date_range(symbol: str, base_dir: Optional[Path] = None) -> Optional[T
 
 def financial_date_range(symbol: str, base_dir: Optional[Path] = None) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
     """Return min/max financial dates for symbol if present in DB."""
-    conn = _connect(base_dir, read_only=True)
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return None
     cur = conn.execute("SELECT MIN(date), MAX(date) FROM financial WHERE symbol=?", (symbol,))
     row = cur.fetchone()
     if not row or row[0] is None:
@@ -162,7 +170,10 @@ def financial_date_range(symbol: str, base_dir: Optional[Path] = None) -> Option
 
 
 def list_symbols(table: str = "price", base_dir: Optional[Path] = None) -> list[str]:
-    conn = _connect(base_dir, read_only=True)
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return []
     cur = conn.execute(f"SELECT DISTINCT symbol FROM {table}")
     return [r[0] for r in cur.fetchall()]
 

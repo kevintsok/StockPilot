@@ -34,7 +34,10 @@ def _lazy_torch_import():
 
 def symbols_from_data_dir(path: Path) -> list[str]:
     if path.exists():
+        # Check both data/ and data/preprocessed/ for .npz files
         cached = [p.stem for p in path.glob("*.npz")]
+        if not cached:
+            cached = [p.stem for p in path.glob("preprocessed/*.npz")]
         if cached:
             return cached
     try:
@@ -451,9 +454,11 @@ def cmd_backtest_strategies(args):
         "end": args.end,
         "cost_bps": args.cost_bps,
         "slippage_bps": args.slippage_bps,
+        "initial_capital": 100_000.0,
         "results": [
             {
                 "strategy_name": r.strategy_name,
+                "tag": r.tag,
                 "metrics": r.metrics,
                 "timeseries": [
                     {
@@ -461,8 +466,23 @@ def cmd_backtest_strategies(args):
                         "gross_ret": float(r.daily_returns.loc[dt]),
                         "net_ret": float(r.daily_returns_net.loc[dt]),
                         "turnover": float(r.turnover.loc[dt]),
+                        "capital": float(r.capital.loc[dt]) if r.capital is not None else None,
+                        "holdings_value": float(r.holdings_value.loc[dt]) if r.holdings_value is not None else None,
+                        "cash": float(r.cash_series.loc[dt]) if r.cash_series is not None else None,
                     }
                     for dt in r.daily_returns.index
+                ],
+                "trades": [
+                    {
+                        "date": t.date,
+                        "symbol": t.symbol,
+                        "action": t.action,
+                        "price": t.price,
+                        "shares": t.shares,
+                        "amount": t.amount,
+                        "reason": t.reason,
+                    }
+                    for t in r.trades
                 ],
             }
             for r in results
@@ -480,7 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     p_fetch = sub.add_parser("fetch-all", help="抓取全市场历史数据")
-    p_fetch.add_argument("--start", default="2018-01-01")
+    p_fetch.add_argument("--start", default="1990-01-01")
     p_fetch.add_argument("--limit", type=int, default=None, help="只抓取前 N 只股票用于测试")
     p_fetch.set_defaults(func=cmd_fetch_all)
 

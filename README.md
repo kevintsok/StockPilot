@@ -82,44 +82,180 @@ python -m auto_select_stock.ops_dashboard
 
 ---
 
-## Backtest Results (2023-01-01 ~ 2024-12-31)
+## Model Architecture
 
-| Strategy | Total Ret (Net) | Sharpe (Net) | Max DD | Ann Ret (Net) | Avg Turnover |
-|----------|----------------:|-------------:|-------:|--------------:|-------------:|
-| **Confidence-Sized** | **+71.1%** | **1.08** | -27.6% | +32.3% | 65.0% |
-| TopK-Proportional | +63.3% | 0.98 | -27.6% | +29.1% | 64.8% |
-| Momentum-Filter | +47.2% | 0.76 | -30.7% | +22.3% | 67.6% |
-| TopK-Threshold | +45.7% | 0.70 | -27.6% | +21.6% | 63.6% |
-| Dual-Threshold | +31.3% | 0.71 | -22.5% | +15.2% | 28.1% |
-| BottomK-Reversal | +18.9% | 0.50 | -20.5% | +9.4% | 50.2% |
-| Risk-Parity | -8.3% | -0.18 | -41.6% | -4.4% | 64.8% |
-| LongShort-Equal | -12.9% | -0.75 | -17.2% | -6.9% | 33.6% |
-| Sector-Neutral | -12.9% | -0.75 | -17.2% | -6.9% | 33.6% |
-| TopK-StopLoss | -100.0% | nan | -108.9% | nan | 1355.3% |
+### PriceTransformer: Input → Output
 
-> Model: price_transformer (train: 2018-2021, val: 2022). Costs: 15bp commission + 10bp slippage.
-> **TopK-StopLoss fails due to A-share T+1 constraint** — trailing stops need next-day execution.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           INPUT  (per timestep)                          │
+│                                                                         │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌───────────────────────┐  │
+│   │  Price (12维)    │  │ Financial (7维)   │  │ Technical (14维)       │  │
+│   │                  │  │                  │  │                       │  │
+│   │ open             │  │ roe              │  │ rsi_14                │  │
+│   │ high             │  │ net_profit_margin│  │ macd_line             │  │
+│   │ low              │  │ gross_margin     │  │ macd_signal           │  │
+│   │ close            │  │ operating_cashflow│ │ macd_hist             │  │
+│   │ volume           │  │   _growth        │  │ bb_position           │  │
+│   │ amount           │  │ debt_to_asset    │  │ bb_width              │  │
+│   │ turnover_rate    │  │ eps              │  │ volume_ma5            │  │
+│   │ volume_ratio     │  │ operating_cashflow│  │ volume_ma20           │  │
+│   │ pct_change       │  │   _per_share     │  │ atr_14                │  │
+│   │ amplitude        │  │                  │  │ stoch_k               │  │
+│   │ change_amount    │  │                  │  │ stoch_d               │  │
+│   │                  │  │                  │  │ obv_ma10              │  │
+│   │                  │  │                  │  │ roc_10                │  │
+│   │                  │  │                  │  │ momentum_10           │  │
+│   └────────┬─────────┘  └────────┬─────────┘  └───────────┬───────────┘  │
+│            └────────────────────┼───────────────────────┘              │
+│                                 concat = 33 dimensions                  │
+└─────────────────────────────────────┬───────────────────────────────────┘
+                                      │ shape: (batch, seq_len=1024, 33)
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          PriceTransformer                                │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  input_proj: Linear(33 → 256)                                    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                 │                                       │
+│                                 ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  Sinusoidal Positional Encoding  (动态扩展至任意 seq_len)          │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                 │                                       │
+│                                 ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  TransformerEncoder  (10 layers, 8 heads, dim_ffn=512)            │   │
+│  │  Causal Mask: 位置 i 永远看不到位置 i+1, i+2, ...                │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                 │                                       │
+│                    ┌────────────┴────────────┐                          │
+│                    ▼                         ▼                          │
+│  ┌───────────────────────────┐  ┌───────────────────────────────┐   │
+│  │  Regression Head           │  │  Classification Head            │   │
+│  │  Linear(256 → 1)           │  │  Linear(256 → 1)                 │   │
+│  │  输出: (batch, seq_len)    │  │  输出: (batch, seq_len) logits  │   │
+│  │  每步一个 log_return 预测  │  │  每步一个 up/down 概率           │   │
+│  └─────────────┬─────────────┘  └──────────────┬──────────────────┘   │
+│                │                                  │                     │
+│                └──────────────┬───────────────────┘                     │
+│                               ▼                                          │
+│                    ┌──────────────────────┐                              │
+│                    │  last timestep = t   │                              │
+│                    │  即 next-day 预测     │                              │
+│                    └──────────┬───────────┘                              │
+└──────────────────────────────┼───────────────────────────────────────────┘
+                               │
+               ┌───────────────┴────────────────┐
+               ▼                                ▼
+┌──────────────────────────────┐  ┌──────────────────────────────────────┐
+│  Regression Output            │  │  Classification Output               │
+│                              │  │                                      │
+│  pred_log_return = out[0,-1] │  │  pred_direction = sigmoid(out[1,-1]) │
+│                              │  │  > 0.5 → 上涨, < 0.5 → 下跌         │
+│  exp(pred_log_return) - 1    │  │                                      │
+│  = predicted_return (预测收益率) │  │  用于: 置信度排序、策略权重         │
+│                              │  │                                      │
+│  用于: 策略排序 & 权重计算     │  │                                      │
+└──────────────────────────────┘  └──────────────────────────────────────┘
+```
 
-**Top insight**: Confidence-weighted sizing (weight by |pred_ret|) beats naive equal-weight TopK. Momentum filter adds no benefit in this period. Long/short strategies underperform due to limited true shorting in A-shares.
+### Training: Loss Function
+
+```
+loss = λ_reg · MSE(pred_log_return, real_log_return)
+     + λ_cls · BCE(pred_direction, real_up/down)
+     + λ_rank · RankingLoss(pred_return pairs)
+
+默认权重:  λ_reg=0.1   λ_cls=10.0   λ_rank=1.0
+          (回归损失权重低，分类损失主导，排序损失辅助)
+```
+
+### Confidence-Sized Strategy: How Output is Used
+
+```
+predicted_return (regression head last timestep)
+         │
+         ├─── abs(predicted_return) = 置信度
+         │         │
+         │         ▼
+         │    ┌────────────────────┐
+         │    │  置信度归一化权重   │
+         │    │  weight_i =        │
+         │    │    |ret_i| / Σ|ret│ │
+         │    └────────────────────┘
+         │
+         └─── sign(predicted_return) 决定方向
+                  (long-only 策略只看正值)
+```
+
+### Feature Summary
+
+| 类别 | 维度 | 说明 |
+|------|------|------|
+| Price | 12 | OHLC + volume/amount + turnover metrics |
+| Financial | 7 | ROE, margin, cashflow, debt, EPS — backward-filled from quarterly reports |
+| Technical | 14 | RSI, MACD, Bollinger, volume MA, ATR, Stochastic, OBV, ROC, Momentum |
+| **Total** | **33** | 每 timestep 一个 33 维向量 |
+
+### Key Design Decisions
+
+- **Causal mask**: Transformer 位置 i 看不到未来信息，确保不泄露未来价格
+- **Date-window split**: 训练/验证/测试按时间划分，防止财务报告数据穿越
+- **分类损失主导**: `λ_cls=10.0` >> `λ_reg=0.1`，模型优先学习方向而非精确收益率
+- **排序损失**: ListMLE-style hinge loss，优化股票间的相对排序
+- **动态位置编码**: 推理时可处理比训练时更长的序列
+
+---
+
+## Backtest Results (2024-06-01 ~ 2025-06-01)
+
+![Backtest Capital Curve](models/backtest_diverse_30_capital_curve.png)
+
+**Model**: `price_transformer_multihorizon_full.pt` — Multi-horizon Transformer (1d/3d/5d/7d/14d/20d heads), 1,677 stocks, seq_len=1024, trained 3 epochs. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。
+
+| Strategy | Tag | Final Capital | Total Ret | Sharpe | Max DD | Avg Turnover |
+|----------|-----|-------------:|----------:|-------:|-------:|-------------:|
+| **RiskParity-VL10-1d** | **469da** | **328,393** | **+228.4%** | **6.75** | **-19.7%** | 64.9% |
+| StopLoss-3pct-5d | 47cda | 272,027 | +172.0% | 6.61 | -16.6% | 63.9% |
+| StopLoss-3pct-1d | fc99f | 188,542 | +88.5% | 3.70 | -16.7% | 52.7% |
+| TopK-K10-1d | 3f274 | 143,469 | +43.5% | 1.67 | -26.1% | 56.4% |
+| RiskParity-VL20-5d | dfe5c | 135,366 | +35.4% | 1.08 | -31.3% | 56.3% |
+| StopLoss-8pct-1d | a1e30 | 128,007 | +28.0% | 1.76 | -9.8% | 23.7% |
+| StopLoss-8pct-5d | 21312 | 115,103 | +15.1% | 1.48 | -6.1% | 23.6% |
+| Momentum-LB5-1d | 7ef00 | 114,655 | +14.7% | 0.44 | -37.1% | 54.4% |
+| TopK-K3-3d | a2b0b | 94,026 | -6.0% | -0.14 | -44.7% | 61.0% |
+| TopK-K10-14d | c8638 | 25,123 | -74.9% | -2.66 | -75.7% | 46.4% |
+
+**关键洞察**:
+- **RiskParity-VL10-1d [469da] (+228%, Sharpe 6.75)** 压倒性优势 — 波动率倒数加权 + 1日预测完美匹配A股高频交易特性
+- **止损机制是关键**：StopLoss-3pct-5d (+172%) 远胜 StopLoss-8pct-5d (+15%)，3%止损阈值比8%更有效
+- **预测期限越长越危险**：TopK-K3-20d (-88%)、TopK-K3-14d (-91%) 毁灭性亏损，1日/3日预测最可靠
+- **每日推送默认使用 RiskParity-VL10-1d [469da] 策略**
+
+> 每笔交易记录（日期/股票/价格/股数/金额）均完整保存在 JSON 结果中，可逐笔回溯分析。
 
 ---
 
 ## Available Strategies
 
-| Type | Description |
-|------|-------------|
-| `topk` | Buy top-K proportional to predicted return |
-| `threshold` | Buy top-K only when pred > threshold |
-| `long_short` | Long top-N%, short bottom-N%, equal weight |
-| `momentum_filter` | TopK only when pred > short-term MA of predictions |
-| `risk_parity` | TopK weighted inversely by realized volatility |
-| `mean_reversion` | Long losers (bottom-K), short winners (top-K) |
-| `confidence` | Weight by \|pred_ret\|, long only |
-| `sector_neutral` | Long/short equal weight, net-zero sector exposure |
-| `trailing_stop` | TopK with stop-loss on realized loss |
-| `dual_thresh` | Long when pred > upper, short when pred < lower |
+所有策略均为**纯做多**（A股不允许做空），利用模型6个预测期限（1d/3d/5d/7d/14d/20d）的多信号优势。
 
-Add new strategies as JSON files in `strategies/configs/`.
+| 策略名称 | Tag | 类型 | 说明 |
+|----------|-----|------|------|
+| TopK-K3-{h} | 5ed5b等 | topk | 等权TopK，K=3 |
+| TopK-K10-{h} | 3f274等 | topk | 等权TopK，K=10 |
+| StopLoss-{n}pct-{h} | fc99f等 | trailing_stop | 追踪止损，n%=止损阈值 |
+| Momentum-LB{n}-{h} | 7ef00等 | momentum_filter | 动量过滤，lookback=n天 |
+| RiskParity-VL{n}-{h} | 469da等 | risk_parity | 波动率倒数加权，vol_lookback=n天 |
+| Confidence-MC{n}bp-{h} | 5f3f9等 | confidence | 置信度加权，min_confidence=n bp |
+| Threshold-{n}pct-{h} | 19888等 | threshold | 预测>n%才入场 |
+
+所有策略tag均为5位MD5 hash（MD5(name:type:horizon:params)[:5]），全局唯一，可用于查询、画图和推送。
+
+> 策略配置保存在 `strategies/configs/diverse_strategies.json`，每个策略tag永久固定。
 
 ---
 
