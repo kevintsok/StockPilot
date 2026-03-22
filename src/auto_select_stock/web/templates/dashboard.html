@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>A股价格与财报看板</title>
+  <style>
+    body { font-family: "Arial", sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:24px; }
+    h1 { margin:0 0 12px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; box-shadow:0 10px 40px rgba(0,0,0,0.45); }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th, td { padding:10px; border-bottom:1px solid #1f2937; text-align:right; }
+    th { cursor:pointer; color:#93c5fd; position:sticky; top:0; background:#0b1221; }
+    th:first-child, td:first-child { text-align:left; }
+    tr:hover { background:rgba(59,130,246,0.08); }
+    .meta { color:#94a3b8; font-size:13px; }
+    .badge { padding:4px 8px; border-radius:8px; background:#1d4ed8; color:#e0f2fe; font-size:12px; }
+    .pos { color:#ef4444; font-weight:600; }
+    .neg { color:#22c55e; font-weight:600; }
+    .zero { color:#e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>A股价格与财报看板 <span class="meta">点击表头排序</span></h1>
+  <div class="card">
+    <table id="stock-table">
+      <thead>
+        <tr id="header-row"></tr>
+      </thead>
+      <tbody id="body-rows"></tbody>
+    </table>
+  </div>
+  <script>
+    const columns = [
+      {key:"symbol", label:"代码"},
+      {key:"market", label:"板块"},
+      {key:"last_date", label:"最新日期"},
+      {key:"price", label:"收盘价"},
+      {key:"volume_ratio", label:"量比"},
+      {key:"amplitude", label:"振幅%"},
+      {key:"change_amount", label:"涨跌额"},
+      {key:"turnover_rate", label:"换手率%"},
+      {key:"pct_change", label:"当日涨跌幅%"},
+      {key:"chg_20d", label:"20日涨跌幅%"},
+      {key:"chg_60d", label:"60日涨跌幅%"},
+      {key:"pe", label:"市盈率(估)"},
+      {key:"roe", label:"ROE%"},
+      {key:"net_profit_margin", label:"净利率%"},
+      {key:"gross_margin", label:"毛利率%"},
+      {key:"ocf_growth", label:"经营现金流增速%"},
+      {key:"debt_to_asset", label:"资产负债率%"},
+    ];
+    const signedColumns = ["pct_change","chg_20d","chg_60d","roe","net_profit_margin","gross_margin","ocf_growth","debt_to_asset"];
+    let data = {{ rows_json }};
+    let sortKey = "symbol";
+    let sortAsc = true;
+
+    function format(val) {
+      if (val === null || val === undefined || Number.isNaN(val)) return "";
+      if (typeof val === "number") return val.toFixed(2);
+      return val;
+    }
+
+    function applySignColor(td, key, value) {
+      if (!signedColumns.includes(key) || typeof value !== "number" || Number.isNaN(value)) return;
+      if (value > 0) {
+        td.classList.add("pos");
+      } else if (value < 0) {
+        td.classList.add("neg");
+      } else {
+        td.classList.add("zero");
+      }
+    }
+
+    function renderHeaders() {
+      const header = document.getElementById("header-row");
+      header.innerHTML = "";
+      columns.forEach(col => {
+        const th = document.createElement("th");
+        th.textContent = col.label;
+        th.onclick = () => sortBy(col.key);
+        header.appendChild(th);
+      });
+    }
+
+    function renderRows() {
+      const body = document.getElementById("body-rows");
+      body.innerHTML = "";
+      data.forEach(row => {
+        const tr = document.createElement("tr");
+        columns.forEach(col => {
+          const td = document.createElement("td");
+          const value = row[col.key];
+          td.textContent = format(value);
+          applySignColor(td, col.key, value);
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+    }
+
+    function sortBy(key) {
+      if (sortKey === key) {
+        sortAsc = !sortAsc;
+      } else {
+        sortKey = key; sortAsc = true;
+      }
+      data.sort((a,b) => {
+        const va = a[sortKey]; const vb = b[sortKey];
+        if (va === undefined || va === null) return 1;
+        if (vb === undefined || vb === null) return -1;
+        if (typeof va === "number" && typeof vb === "number") {
+          return sortAsc ? va - vb : vb - va;
+        }
+        return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      });
+      renderRows();
+    }
+
+    renderHeaders();
+    sortBy("symbol");
+  </script>
+</body>
+</html>

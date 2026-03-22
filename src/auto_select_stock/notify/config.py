@@ -10,7 +10,6 @@ Environment variables:
 """
 
 import os
-from pathlib import Path
 
 # PushPlus token (required)
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")

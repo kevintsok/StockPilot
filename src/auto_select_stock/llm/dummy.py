@@ -1,4 +1,4 @@
-from ..stock_types import StockScore, StockSnapshot
+from ..core.types import StockScore, StockSnapshot
 from .base import LLMClient
 
 

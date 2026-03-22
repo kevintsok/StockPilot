@@ -6,10 +6,9 @@ ScreenCriteria that can be applied against the SQLite database.
 """
 
 import json
-import re
-from typing import Optional, Union
+from typing import Optional
 
-from ..screener import ScreenCriteria
+from ..web.screener import ScreenCriteria
 from .base import LLMClient
 from .openai_client import OpenAIClient
 
@@ -93,7 +92,7 @@ def parse_nl_query_with_llm(query: str, llm_client: Optional[LLMClient] = None) 
             llm_client = OpenAIClient(provider="minimax")
         except Exception:
             # Fall back to regex parser
-            from ..screener import parse_nl_query as regex_parse
+            from ..web.screener import parse_nl_query as regex_parse
             return regex_parse(query)
 
     # Try to use LLM
@@ -124,7 +123,7 @@ def parse_nl_query_with_llm(query: str, llm_client: Optional[LLMClient] = None) 
         )
     except Exception:
         # Fall back to regex parser
-        from ..screener import parse_nl_query as regex_parse
+        from ..web.screener import parse_nl_query as regex_parse
         return regex_parse(query)
 
 

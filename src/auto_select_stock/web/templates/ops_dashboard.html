@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Auto Stock 控制台</title>
+  <style>
+    body { font-family: "Inter", "Arial", sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:24px; }
+    h1 { margin-top:0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; }
+    .card { background:#111827; border:1px solid #1f2937; padding:18px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.35); }
+    .card-title { font-size:18px; font-weight:700; margin:0 0 10px; color:#e2e8f0; }
+    label { display:block; margin-top:8px; font-size:13px; color:#94a3b8; }
+    input { width:100%; padding:8px; border-radius:8px; border:1px solid #1f2937; background:#0b1221; color:#e2e8f0; }
+    .btn { margin-top:10px; width:100%; padding:10px; border:none; border-radius:10px; font-weight:600; cursor:pointer; }
+    .btn[disabled] { opacity:0.7; cursor:not-allowed; }
+    .btn-primary { background:#2563eb; color:#e2e8f0; }
+    .btn-primary:hover:not([disabled]) { background:#1d4ed8; }
+    .btn-primary[disabled] { background:#475569; color:#cbd5e1; }
+    .btn-secondary { background:#64748b; color:#e2e8f0; }
+    .btn-secondary:hover:not([disabled]) { background:#475569; }
+    .btn-secondary[disabled] { background:#475569; color:#cbd5e1; }
+    .btn-secondary.active { background:#2563eb; border:1px solid #2563eb; color:#e2e8f0; }
+    .btn-secondary.active:hover { background:#1d4ed8; }
+    .log { margin-top:12px; font-size:13px; color:#93c5fd; word-break:break-all; white-space:pre-wrap; background:linear-gradient(135deg,#0b1221,#0f172a); padding:8px; border-radius:10px; min-height:80px; max-height:200px; overflow-y:auto; border:1px solid #1f2937; box-shadow:inset 0 1px 0 rgba(255,255,255,0.04); }
+    .desc { color:#cbd5e1; font-size:14px; }
+    .tabs { display:flex; gap:12px; margin-bottom:16px; }
+    .tab { display:none; }
+    .tab.active { display:block; }
+    .btn-tab { padding:10px 14px; border-radius:10px; border:1px solid #1f2937; background:#0b1221; color:#e2e8f0; cursor:pointer; }
+    .btn-tab.active { background:#2563eb; border-color:#2563eb; }
+    .row-pair { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; align-items:start; }
+    .full-row { grid-column:1 / -1; }
+    .stat-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #1f2937; }
+    .stat-row:last-child { border-bottom:none; }
+    .stat-value { font-weight:700; color:#f8fafc; }
+    .danger { color:#f87171; }
+    .inline-action { padding:8px 0; color:#cbd5e1; }
+    .meta.ok { color:#86efac; }
+    .meta.err { color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>Auto Stock 一键控制台</h1>
+  <div class="tabs">
+    <button id="tabbtn-data" class="btn-tab active" onclick="showTab('tab-data')">数据获取</button>
+    <button id="tabbtn-dashboard" class="btn-tab" onclick="showTab('tab-dashboard')">看板</button>
+    <button id="tabbtn-screener" class="btn-tab" onclick="showTab('tab-screener')">选股</button>
+    <button id="tabbtn-train" class="btn-tab" onclick="showTab('tab-train')">训练与推理</button>
+    <button id="tabbtn-eval" class="btn-tab" onclick="showTab('tab-eval')">评估与回测</button>
+  </div>
+  <div id="tab-data" class="tab active">
+    <div class="row-pair full-row" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-title">数据抓取统计</div>
+        <div class="stat-row">
+          <span>日线覆盖</span>
+          <span id="stat-price" class="stat-value">--</span>
+        </div>
+        <div class="stat-row">
+          <span>财务覆盖</span>
+          <span id="stat-fin" class="stat-value">--</span>
+        </div>
+        <div class="stat-row">
+          <span>最新日线日期</span>
+          <span id="stat-price-date" class="stat-value">--</span>
+        </div>
+        <div class="stat-row">
+          <span>最新财务日期</span>
+          <span id="stat-fin-date" class="stat-value">--</span>
+        </div>
+        <div class="meta" id="stat-meta" style="margin-top:10px;">自动刷新中...</div>
+      </div>
+      <div class="inline-action">
+        <div class="desc danger">危险操作：删除全部数据</div>
+        <div class="meta">清空 data 目录下的数据库与文件，不可恢复。</div>
+        <button class="btn btn-secondary danger" style="margin-top:10px; width:auto;" onclick="wipeData()">删除所有数据</button>
+        <div style="margin-top:8px;">
+          <button class="btn btn-secondary danger" style="width:auto;" onclick="wipePrice()">仅删除日线数据</button>
+          <button class="btn btn-secondary danger" style="width:auto; margin-left:8px;" onclick="wipeFinancial()">仅删除财报数据</button>
+        </div>
+        <div class="meta" id="stat-wipe-msg" style="margin-top:10px;"></div>
+        <div class="meta" id="stat-wipe-price" style="margin-top:6px;"></div>
+        <div class="meta" id="stat-wipe-fin" style="margin-top:6px;"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">抓取全量历史日线数据</div>
+        <label>起始日期 (YYYY-MM-DD)</label><input id="fetch_start" value="2000-01-01" />
+        <label>只抓取前 N 只（可空）</label><input id="fetch_limit" placeholder="留空=全部" />
+        <button type="button" id="btn_start_fetch_all" class="btn btn-primary" onclick="runAction('fetch_all')">开始抓取</button>
+        <button type="button" id="btn_stop_fetch_all" class="btn btn-secondary" onclick="stopAction('fetch_all')">暂停</button>
+        <div class="log" id="log_fetch_all"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">抓取财报指标到 data/financials</div>
+        <label>股票代码列表(空格/逗号分隔，留空=全部)</label><input id="fin_symbols" />
+        <label>只抓取前 N 只（可空）</label><input id="fin_limit" placeholder="留空=全部" />
+        <button type="button" id="btn_start_fin" class="btn btn-primary" onclick="runAction('fetch_financials')">抓取财报</button>
+        <button type="button" id="btn_stop_fin" class="btn btn-secondary" onclick="stopAction('fetch_financials')">暂停</button>
+        <div class="log" id="log_fetch_financials"></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-dashboard" class="tab">
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">实时行情看板（新股/全市场快照）</div>
+        <button class="btn btn-primary" onclick="refreshDashboard()">刷新看板</button>
+        <iframe id="dashFrame" src="/dashboard" style="width:100%; height:720px; border:1px solid #1f2937; border-radius:10px; margin-top:12px; background:#0b1221;"></iframe>
+        <div class="log" id="log_render_dashboard"></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-screener" class="tab">
+    <iframe id="screenerFrame" src="/screener" style="width:100%; height:900px; border:1px solid #1f2937; border-radius:10px; background:#0b1221;"></iframe>
+  </div>
+  <div id="tab-train" class="tab">
+    <div class="grid">
+      <div class="card">
+        <div class="desc">训练 Transformer 价格预测模型</div>
+        <label>股票代码列表(空=全部)</label><input id="train_symbols" />
+        <label>Epochs</label><input id="train_epochs" placeholder="20" />
+        <label>Seq Len</label><input id="train_seq" placeholder="60" />
+        <label>Batch Size</label><input id="train_batch" placeholder="64" />
+        <label>LR</label><input id="train_lr" placeholder="0.001" />
+        <label>设备(cuda/cpu，空=自动)</label><input id="train_device" placeholder="" />
+        <button class="btn btn-primary" onclick="runAction('train_transformer')">开始训练</button>
+        <button class="btn btn-secondary" onclick="stopAction('train_transformer')">暂停</button>
+        <div class="log" id="log_train_transformer"></div>
+        <hr style="border:1px solid #1f2937; margin:12px 0;" />
+        <div class="desc">推理预测次日收盘价</div>
+        <label>股票代码</label><input id="pred_symbol" />
+        <label>Seq Len (可空)</label><input id="pred_seq" placeholder="60" />
+        <label>Checkpoint 路径 (可空)</label><input id="pred_ckpt" placeholder="models/price_transformer.pt" />
+        <label>设备(cuda/cpu，空=自动)</label><input id="pred_device" />
+        <button class="btn btn-primary" onclick="runAction('predict_transformer')">开始推理</button>
+        <button class="btn btn-secondary" onclick="stopAction('predict_transformer')">暂停</button>
+        <div class="log" id="log_predict_transformer"></div>
+        <hr style="border:1px solid #1f2937; margin:12px 0;" />
+        <div class="desc">缓存管理</div>
+        <div class="meta">删除预处理特征缓存（*.npz）或数据集缓存（datasets/*.pt）</div>
+        <div style="margin-top:8px;">
+          <button class="btn btn-secondary danger" style="width:auto;" onclick="wipeFeatureCache()">删除特征缓存</button>
+          <button class="btn btn-secondary danger" style="width:auto; margin-left:8px;" onclick="wipeDatasetCache()">删除数据集缓存</button>
+        </div>
+        <div class="meta" id="stat-wipe-feature" style="margin-top:8px;"></div>
+        <div class="meta" id="stat-wipe-dataset" style="margin-top:6px;"></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-eval" class="tab">
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">简单多空回测</div>
+        <div class="desc">使用训练好的 Transformer 预测次日收益，构建多/空组合并计算收益、波动、Sharpe、回撤、换手等指标。</div>
+        <label>股票代码列表(空=全部)</label><input id="bt_symbols" />
+        <label>开始日期</label><input id="bt_start" placeholder="YYYY-MM-DD" />
+        <label>结束日期</label><input id="bt_end" placeholder="YYYY-MM-DD" />
+        <label>Top 百分比 (0-1)</label><input id="bt_top_pct" placeholder="0.1" />
+        <label>Checkpoint 路径</label><input id="bt_ckpt" placeholder="models/price_transformer.pt" />
+        <label>成本 (bp)</label><input id="bt_cost" placeholder="0" />
+        <label>滑点 (bp)</label><input id="bt_slippage" placeholder="0" />
+        <label style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+          <input type="checkbox" id="bt_allow_short" style="width:auto;" /> 允许做空尾部组合
+        </label>
+        <button class="btn btn-primary" onclick="runAction('backtest_transformer')">开始回测</button>
+        <button class="btn btn-secondary" onclick="stopAction('backtest_transformer')">暂停</button>
+        <div class="log" id="log_backtest_transformer"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const timers = {};
+    const DEFAULT_TIMEOUT = 15000; // 15s 网络超时，避免请求挂起
+
+    async function fetchWithTimeout(url, options = {}, timeout = DEFAULT_TIMEOUT) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      try {
+        return await fetch(url, {...options, signal: controller.signal});
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    function showTab(tabId) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.btn-tab').forEach(b => b.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      document.getElementById('tabbtn-' + tabId.split('-')[1]).classList.add('active');
+    }
+    function stopTimer(action) {
+      if (timers[action]) { clearInterval(timers[action]); delete timers[action]; }
+    }
+    function startLogStream(action, logPath) {
+      stopTimer(action);
+      const logEl = document.getElementById('log_' + action);
+      const fetchLog = async () => {
+        try {
+          const resp = await fetchWithTimeout('/log?path=' + encodeURIComponent(logPath), {}, 30000);
+          const txt = await resp.text();
+          logEl.textContent = txt;
+          logEl.scrollTop = logEl.scrollHeight;
+        } catch (e) {
+          if (e.name === 'AbortError') {
+            // Swallow transient aborts to avoid flashing errors in UI; next tick will retry.
+            return;
+          }
+          logEl.textContent = 'Log error: ' + e;
+        }
+      };
+      fetchLog();
+      timers[action] = setInterval(fetchLog, 2000);
+    }
+    async function runAction(action) {
+      const payload = {};
+      if (action === 'fetch_all') {
+        payload.start = document.getElementById('fetch_start').value;
+        payload.limit = document.getElementById('fetch_limit').value;
+      } else if (action === 'fetch_financials') {
+        payload.symbols = document.getElementById('fin_symbols').value;
+        payload.limit = document.getElementById('fin_limit').value;
+      } else if (action === 'train_transformer') {
+        payload.symbols = document.getElementById('train_symbols').value;
+        payload.epochs = document.getElementById('train_epochs').value;
+        payload.seq_len = document.getElementById('train_seq').value;
+        payload.batch_size = document.getElementById('train_batch').value;
+        payload.lr = document.getElementById('train_lr').value;
+        payload.device = document.getElementById('train_device').value;
+      } else if (action === 'predict_transformer') {
+        payload.symbol = document.getElementById('pred_symbol').value;
+        payload.seq_len = document.getElementById('pred_seq').value;
+        payload.checkpoint = document.getElementById('pred_ckpt').value;
+        payload.device = document.getElementById('pred_device').value;
+      } else if (action === 'backtest_transformer') {
+        payload.symbols = document.getElementById('bt_symbols').value;
+        payload.start = document.getElementById('bt_start').value;
+        payload.end = document.getElementById('bt_end').value;
+        payload.top_pct = document.getElementById('bt_top_pct').value;
+        payload.checkpoint = document.getElementById('bt_ckpt').value;
+        payload.cost_bps = document.getElementById('bt_cost').value;
+        payload.slippage_bps = document.getElementById('bt_slippage').value;
+        payload.allow_short = document.getElementById('bt_allow_short').checked;
+      } else if (action === 'render_dashboard') {
+        payload.symbols = document.getElementById('dash_symbols').value;
+        payload.lookback_short = document.getElementById('dash_short').value;
+        payload.lookback_long = document.getElementById('dash_long').value;
+        payload.output = document.getElementById('dash_output').value;
+      }
+
+      const logEl = document.getElementById('log_' + action);
+      // Optimistically switch button states; will revert on failure. Ignore UI errors.
+      try { toggleButtons(action, true); } catch (e) { console.warn('toggleButtons failed', e); }
+      logEl.textContent = '启动中...';
+      try {
+        const resp = await fetchWithTimeout('/run', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action, payload})
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          logEl.textContent = text || '请求失败';
+          stopTimer(action);
+          try { toggleButtons(action, false); } catch (e) { console.warn('toggleButtons failed', e); }
+          return;
+        }
+        const info = await resp.json();
+        logEl.textContent = `已启动 ${action}. 日志: ${info.log}`;
+        startLogStream(action, info.log);
+      } catch (e) {
+        logEl.textContent = '请求失败: ' + e;
+        try { toggleButtons(action, false); } catch (err) { console.warn('toggleButtons failed', err); }
+      }
+    }
+    function refreshDashboard() {
+      const frame = document.getElementById('dashFrame');
+      frame.src = '/dashboard?ts=' + Date.now();
+      document.getElementById('log_render_dashboard').textContent = '已刷新看板';
+    }
+    async function refreshStats() {
+      const meta = document.getElementById('stat-meta');
+      meta.classList.remove('ok', 'err');
+      meta.textContent = '统计计算中...';
+      try {
+        const resp = await fetchWithTimeout('/stats');
+        if (!resp.ok) {
+          meta.textContent = await resp.text();
+          meta.classList.add('err');
+          return;
+        }
+        const stats = await resp.json();
+        const priceTotal = stats.price_total || stats.total_universe || 0;
+        const finTotal = stats.financial_total || stats.total_universe || 0;
+        document.getElementById('stat-price').textContent = `${stats.price_downloaded}/${priceTotal}`;
+        document.getElementById('stat-fin').textContent = `${stats.financial_downloaded}/${finTotal}`;
+        document.getElementById('stat-price-date').textContent = stats.price_latest_date || '--';
+        document.getElementById('stat-fin-date').textContent = stats.financial_latest_date || '--';
+        const srcLabel = stats.source === 'remote' ? '符号总数来自网络接口' : '符号总数来自本地数据';
+        const totalUniverse = stats.total_universe || stats.db_symbols || Math.max(priceTotal, finTotal);
+        meta.textContent = `统计成功 · 符号总数: ${totalUniverse} (${srcLabel}) · 计算于 ${stats.cached_at}`;
+        meta.classList.add('ok');
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          // 网络超时中止不展示为错误，下一轮刷新再试
+          return;
+        }
+        meta.textContent = '统计失败: ' + e;
+        meta.classList.add('err');
+      }
+    }
+    setInterval(refreshStats, 8000);
+    async function stopAction(action) {
+      stopTimer(action);
+      const logEl = document.getElementById('log_' + action);
+      try {
+        await fetchWithTimeout('/stop?action=' + encodeURIComponent(action), {method:'POST'});
+        logEl.textContent += "\n已请求暂停（请查看对应日志确认停止）";
+        logEl.scrollTop = logEl.scrollHeight;
+      } catch (e) {
+        logEl.textContent += "\n暂停失败: " + e;
+      }
+      try { toggleButtons(action, false); } catch (err) { console.warn('toggleButtons failed', err); }
+      refreshStats();
+    }
+    async function wipeData() {
+      const logEl = document.getElementById('stat-wipe-msg');
+      if (!confirm('确定要删除全部数据吗？此操作不可恢复。')) return;
+      if (!confirm('再次确认：删除 data 目录下的全部数据？')) return;
+      logEl.textContent = '删除中...';
+      try {
+        const resp = await fetch('/wipe-data', {method:'POST'});
+        const txt = await resp.text();
+        logEl.textContent = txt;
+        refreshStats();
+      } catch (e) {
+        logEl.textContent = '删除失败: ' + e;
+      }
+    }
+    async function wipePrice() {
+      const logEl = document.getElementById('stat-wipe-price');
+      if (!confirm('确定要删除所有日线数据吗？')) return;
+      logEl.textContent = '删除中...';
+      try {
+        const resp = await fetch('/wipe-price', {method:'POST'});
+        const txt = await resp.text();
+        logEl.textContent = txt;
+        refreshStats();
+      } catch (e) {
+        logEl.textContent = '删除失败: ' + e;
+      }
+    }
+    async function wipeFinancial() {
+      const logEl = document.getElementById('stat-wipe-fin');
+      if (!confirm('确定要删除所有财报数据吗？')) return;
+      logEl.textContent = '删除中...';
+      try {
+        const resp = await fetch('/wipe-financial', {method:'POST'});
+        const txt = await resp.text();
+        logEl.textContent = txt;
+        refreshStats();
+      } catch (e) {
+        logEl.textContent = '删除失败: ' + e;
+      }
+    }
+    async function wipeFeatureCache() {
+      const logEl = document.getElementById('stat-wipe-feature');
+      logEl.textContent = '删除中...';
+      try {
+        const resp = await fetch('/wipe-feature-cache', {method:'POST'});
+        const txt = await resp.text();
+        logEl.textContent = txt;
+      } catch (e) {
+        logEl.textContent = '删除失败: ' + e;
+      }
+    }
+    async function wipeDatasetCache() {
+      const logEl = document.getElementById('stat-wipe-dataset');
+      logEl.textContent = '删除中...';
+      try {
+        const resp = await fetch('/wipe-dataset-cache', {method:'POST'});
+        const txt = await resp.text();
+        logEl.textContent = txt;
+      } catch (e) {
+        logEl.textContent = '删除失败: ' + e;
+      }
+    }
+    refreshStats();
+  </script>
+</body>
+</html>

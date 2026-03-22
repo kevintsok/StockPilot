@@ -11,23 +11,23 @@ try:
 except Exception:  # noqa: BLE001
     tqdm = None
 
-from . import data_fetcher
-from . import financials_fetcher
+from .data import fetcher as data_fetcher
+from .data import financials as financials_fetcher
 from .config import DATA_DIR, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, MODEL_DIR, REPORT_DIR
-from .dashboard import build_rows, render_dashboard
-from .html_report import render_report
+from .web.dashboard import build_rows, render_dashboard
+from .web.html_report import render_report
 from .predict.backtest import BacktestConfig, filter_a_share_symbols, run_backtest, run_backtest_for_symbol, run_topk_strategy
-from .predict.strategies.registry import StrategyRegistry, make_strategy
-from .predict.strategies.runner import run_strategy_backtest, run_all_strategies
-from .scoring import score_symbols
-from .screener import render_screener_html, screen_stocks, parse_nl_query
-from .storage import ensure_data_dir, list_symbols
+from .predict.strategies.registry import StrategyRegistry
+from .predict.strategies.runner import run_all_strategies
+from .web.scoring import score_symbols
+from .web.screener import render_screener_html, screen_stocks, parse_nl_query
+from .data.storage import ensure_data_dir, list_symbols
 def _lazy_torch_import():
     # Delay heavy deps (torch) so fetch/update can run without GPU/torch installed.
-    from .predict.backtest import BacktestConfig, run_backtest
+    from .predict.backtest import BacktestConfig
     from .predict.inference import predict_next_close
     from .predict.train import train_from_symbols
-    from .torch_model import TrainConfig
+    from .core.torch_model import TrainConfig
 
     return TrainConfig, predict_next_close, train_from_symbols, BacktestConfig, run_backtest
 

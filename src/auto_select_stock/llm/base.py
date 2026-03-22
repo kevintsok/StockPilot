@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
 
-from ..stock_types import StockSnapshot, StockScore
+from ..core.types import StockSnapshot, StockScore
 
 
 class LLMClient(ABC):

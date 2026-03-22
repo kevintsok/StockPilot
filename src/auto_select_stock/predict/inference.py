@@ -6,65 +6,124 @@ import numpy as np
 import torch
 
 from ..config import DATA_DIR
-from ..torch_model import DEFAULT_HORIZONS, PriceTransformer, TrainConfig
+from ..core.torch_model import DEFAULT_HORIZONS, PriceTransformer, TrainConfig
 from .data import TECHNICAL_FEATURE_COLUMNS, close_index, load_feature_matrix
+
+
+class CheckpointMigrator:
+    """
+    Handles backward-compatibility migration for legacy checkpoint formats.
+
+    Older checkpoints may be missing fields added in later versions, or may use a
+    single-head model architecture instead of the current multi-head design.
+    This class provides structured, documented helpers to bring them up to date.
+    """
+
+    def __init__(self, cfg: TrainConfig, state_dict: Dict):
+        self.cfg = cfg
+        self.state_dict = state_dict
+
+    def migrate_config(self) -> None:
+        """
+        Backward-compat: fill in any TrainConfig fields that are missing from
+        older checkpoints so that downstream code can rely on them being present.
+        """
+        if not hasattr(self.cfg, "target_mode"):
+            self.cfg.target_mode = "close"
+        if not hasattr(self.cfg, "weight_decay"):
+            self.cfg.weight_decay = 0.0
+        if not hasattr(self.cfg, "grad_clip"):
+            self.cfg.grad_clip = 0.0
+        if not hasattr(self.cfg, "lambda_reg"):
+            self.cfg.lambda_reg = 0.1  # new default (was 1000)
+        if not hasattr(self.cfg, "lambda_cls"):
+            self.cfg.lambda_cls = 10.0  # new default (was 1.0)
+        if not hasattr(self.cfg, "lambda_rank"):
+            self.cfg.lambda_rank = 1.0
+        if not hasattr(self.cfg, "horizons"):
+            self.cfg.horizons = DEFAULT_HORIZONS.copy()
+
+    def infer_architecture(self) -> Tuple[int, int, int, int, float]:
+        """
+        Infer model architecture dimensions from the checkpoint state_dict.
+
+        Returns:
+            Tuple of (d_model, num_layers, nhead, dim_feedforward, dropout)
+        """
+        d_model = self.state_dict["input_proj.weight"].shape[0]
+        dim_feedforward = self.state_dict.get("encoder.layers.0.linear1.weight", torch.empty(0)).shape[0] or 256
+
+        # Infer layer count from encoder layer keys to stay compatible with checkpoints trained using
+        # different num_layers defaults.
+        layer_keys = [k for k in self.state_dict.keys() if k.startswith("encoder.layers.")]
+        num_layers = 0
+        for k in layer_keys:
+            parts = k.split(".")
+            if len(parts) > 2 and parts[2].isdigit():
+                num_layers = max(num_layers, int(parts[2]) + 1)
+        num_layers = max(num_layers, 1)
+
+        # Prefer config-provided nhead when available; otherwise pick a divisor of d_model.
+        nhead = getattr(self.cfg, "nhead", 8)
+        if nhead <= 0 or d_model % nhead != 0:
+            for candidate in (8, 4, 2, 1):
+                if d_model % candidate == 0:
+                    nhead = candidate
+                    break
+        dropout = getattr(self.cfg, "dropout", 0.1)
+        return d_model, num_layers, nhead, dim_feedforward, dropout
+
+    def is_legacy_single_head(self) -> bool:
+        """Returns True if this checkpoint uses the old single-head architecture."""
+        return not any(k.startswith("reg_heads.") for k in self.state_dict.keys())
+
+    def migrate_legacy_heads(self, horizons: list) -> None:
+        """
+        Backward-compat: if loading a legacy single-head checkpoint into the current
+        multi-head model, copy the old head weights to all new horizon heads so that
+        all horizons produce the same prediction as the original single-head model.
+        """
+        if self.is_legacy_single_head() and "head.weight" in self.state_dict:
+            old_reg_weight = self.state_dict.pop("head.weight")
+            old_reg_bias = self.state_dict.pop("head.bias")
+            old_cls_weight = self.state_dict.pop("cls_head.weight")
+            old_cls_bias = self.state_dict.pop("cls_head.bias")
+            for i in range(len(horizons)):
+                self.state_dict[f"reg_heads.{i}.weight"] = old_reg_weight.clone()
+                self.state_dict[f"reg_heads.{i}.bias"] = old_reg_bias.clone()
+                self.state_dict[f"cls_heads.{i}.weight"] = old_cls_weight.clone()
+                self.state_dict[f"cls_heads.{i}.bias"] = old_cls_bias.clone()
 
 
 def load_model(
     checkpoint_path: Path, device: Optional[str] = None
 ) -> Tuple[PriceTransformer, Dict[str, float], TrainConfig, Optional[Dict[str, np.ndarray]]]:
     target_device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Compatibility: checkpoints saved with old module path after directory reorganization
+    import sys
+    if "auto_select_stock.torch_model" not in sys.modules:
+        sys.modules["auto_select_stock.torch_model"] = sys.modules["auto_select_stock.core.torch_model"]
+
     try:
         payload = torch.load(checkpoint_path, map_location=target_device, weights_only=False)
     except TypeError:
         payload = torch.load(checkpoint_path, map_location=target_device)
     cfg: TrainConfig = payload["config"]
-    if not hasattr(cfg, "target_mode"):
-        cfg.target_mode = "close"
-    if not hasattr(cfg, "weight_decay"):
-        cfg.weight_decay = 0.0
-    if not hasattr(cfg, "grad_clip"):
-        cfg.grad_clip = 0.0
-    if not hasattr(cfg, "lambda_reg"):
-        cfg.lambda_reg = 0.1  # new default (was 1000)
-    if not hasattr(cfg, "lambda_cls"):
-        cfg.lambda_cls = 10.0  # new default (was 1.0)
-    if not hasattr(cfg, "lambda_rank"):
-        cfg.lambda_rank = 1.0
-    if not hasattr(cfg, "horizons"):
-        cfg.horizons = DEFAULT_HORIZONS.copy()
+    state_dict = payload["model_state"]
+
+    # Run backward-compat migrations
+    migrator = CheckpointMigrator(cfg, state_dict)
+    migrator.migrate_config()
+
     # Reconstruct feature columns including technical features
     tech_cols = getattr(cfg, "technical_columns", None) or TECHNICAL_FEATURE_COLUMNS
     feature_columns = cfg.price_columns + cfg.financial_columns + tech_cols
-    state_dict = payload["model_state"]
-    d_model = state_dict["input_proj.weight"].shape[0]
-    dim_feedforward = state_dict.get("encoder.layers.0.linear1.weight", torch.empty(0)).shape[0] or 256
-    # Infer layer count from encoder layer keys to stay compatible with checkpoints trained using
-    # different num_layers defaults.
-    layer_keys = [k for k in state_dict.keys() if k.startswith("encoder.layers.")]
-    num_layers = 0
-    for k in layer_keys:
-        parts = k.split(".")
-        if len(parts) > 2 and parts[2].isdigit():
-            num_layers = max(num_layers, int(parts[2]) + 1)
-    num_layers = max(num_layers, 1)
-    # Prefer config-provided nhead when available; otherwise pick a divisor of d_model.
-    nhead = getattr(cfg, "nhead", 8)
-    if nhead <= 0 or d_model % nhead != 0:
-        for candidate in (8, 4, 2, 1):
-            if d_model % candidate == 0:
-                nhead = candidate
-                break
-    dropout = getattr(cfg, "dropout", 0.1)
+
+    d_model, num_layers, nhead, dim_feedforward, dropout = migrator.infer_architecture()
 
     # Check if this is a legacy single-head checkpoint
-    has_multi_head = any(k.startswith("reg_heads.") for k in state_dict.keys())
-    if has_multi_head:
-        # New multi-head format: normal load
-        horizons = cfg.horizons
-    else:
-        # Legacy single-head format: use multi-head model but will copy weights
-        horizons = cfg.horizons
+    horizons = cfg.horizons
 
     model = PriceTransformer(
         input_dim=len(feature_columns),
@@ -76,19 +135,8 @@ def load_model(
         dropout=dropout,
     )
 
-    # Backward compat: if loading legacy single-head checkpoint into new multi-head model,
-    # copy the old head weights to all new heads
-    if not has_multi_head and "head.weight" in state_dict:
-        old_reg_weight = state_dict.pop("head.weight")
-        old_reg_bias = state_dict.pop("head.bias")
-        old_cls_weight = state_dict.pop("cls_head.weight")
-        old_cls_bias = state_dict.pop("cls_head.bias")
-        # Copy to all horizon heads
-        for i in range(len(horizons)):
-            state_dict[f"reg_heads.{i}.weight"] = old_reg_weight.clone()
-            state_dict[f"reg_heads.{i}.bias"] = old_reg_bias.clone()
-            state_dict[f"cls_heads.{i}.weight"] = old_cls_weight.clone()
-            state_dict[f"cls_heads.{i}.bias"] = old_cls_bias.clone()
+    # Migrate legacy single-head weights to multi-head format
+    migrator.migrate_legacy_heads(horizons)
 
     model.load_state_dict(state_dict, strict=False)
     model.to(target_device)

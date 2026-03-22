@@ -8,9 +8,20 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from ..predict_pipeline import get_latest_price_date as _get_latest_date
-from ..predict_pipeline import get_top_k_stocks
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from .pipeline import get_latest_price_date as _get_latest_date
+from .pipeline import get_top_k_stocks
 from ..predict.strategies.registry import StrategyRegistry
+
+
+def _get_template_env() -> Environment:
+    """Get Jinja2 environment with FileSystemLoader pointing to templates directory."""
+    template_dir = Path(__file__).resolve().parent.parent / "web" / "templates"
+    return Environment(
+        loader=FileSystemLoader(searchpath=str(template_dir)),
+        autoescape=select_autoescape(["html"]),
+    )
 
 
 def get_latest_price_date() -> str:
@@ -103,7 +114,7 @@ def generate_report(
     params_summary = _strategy_params_summary(strategy, cfg)
 
     # Table columns: Stock | [horizon] Return | Key Params | Weight/Position
-    rows = ""
+    rows_html = ""
     for sym, pred_rets, weight in results:
         # Primary prediction (strategy's own horizon)
         primary_ret = pred_rets.get(strategy_horizon, 0.0) * 100
@@ -132,7 +143,7 @@ def generate_report(
         cells += f'<td style="color:{color};font-weight:bold">{primary_ret:+.2f}%</td>'
         cells += f'<td style="color:#555">{params_str}</td>'
         cells += f'<td><span style="color:#1565c0">{weight:.2%}</span><br><span style="color:#888;font-size:11px">≈{pos_amount}</span></td>'
-        rows += f"<tr>{cells}</tr>\n"
+        rows_html += f"<tr>{cells}</tr>\n"
 
     # Summary
     total_weight = sum(w for _, _, w in results)
@@ -141,43 +152,21 @@ def generate_report(
         if results else 0
     )
 
-    html = f"""<html>
-<head><meta charset="utf-8"></head>
-<body>
-<h3>StockPilot 每日推荐 ({today_str})</h3>
-<p>
-  <b>数据库最新:</b> {latest_db_date} &nbsp;|&nbsp;
-  <b>策略:</b> {strategy} &nbsp;|&nbsp;
-  <b>推送股数:</b> {actual_top_k}只
-</p>
-<p style="color:#666;font-size:13px">{params_summary}</p>
-
-<table border="1" cellpadding="8" cellspacing="0">
-<thead>
-<tr>
-  <th>股票代码</th>
-  <th>{strategy_horizon}预测收益</th>
-  <th>关键参数</th>
-  <th>权重 / 仓位</th>
-</tr>
-</thead>
-<tbody>
-{rows}
-</tbody>
-</table>
-
-<p>
-  <b>汇总:</b> {len(results)}只股票 | 总仓位{total_weight:.0%} |
-  平均{strategy_horizon}收益{avg_primary*100:+.2f}% |
-  假设本金{capital:,.0f}元
-</p>
-
-<p style="background:#f5f5f5;padding:10px;border-radius:6px">
-<b>操作建议:</b> 按「权重」列分配买入金额（≈后的数字），T+1制度当日买入次日可卖。<br>
-<b>风险提示:</b> 预测仅供参考，不构成投资建议。A股涨跌停时无法买卖。
-</p>
-<p style="color:#888;font-size:12px">由 StockPilot 自动生成</p>
-</body>
-</html>"""
+    # Use Jinja2 template
+    env = _get_template_env()
+    template = env.get_template("daily_report.html")
+    html = template.render(
+        today_str=today_str,
+        latest_db_date=latest_db_date,
+        strategy=strategy,
+        top_k=actual_top_k,
+        params_summary=params_summary,
+        rows_html=rows_html,
+        horizon=strategy_horizon,
+        result_count=len(results),
+        total_weight=f"{total_weight:.0%}",
+        avg_primary=f"{avg_primary*100:+.2f}",
+        capital=f"{capital:,.0f}",
+    )
 
     return html, results

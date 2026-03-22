@@ -17,7 +17,7 @@ try:
 except Exception:  # noqa: BLE001
     tqdm = None
 
-from ..config import DATA_DIR, MODEL_DIR, PREPROCESSED_DIR, REPORT_DIR
+from ..config import DATA_DIR, PREPROCESSED_DIR, REPORT_DIR
 
 
 def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
@@ -66,10 +66,9 @@ def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: f
     return ranking_loss
 
 
-from ..torch_model import PriceTransformer, TrainConfig
+from ..core.torch_model import PriceTransformer, TrainConfig
 from .checkpoints import load_training_checkpoint, save_checkpoint
 from .data import (
-    FINANCIAL_FEATURE_COLUMNS,
     PRICE_FEATURE_COLUMNS,
     TECHNICAL_FEATURE_COLUMNS,
     all_financial_columns,
@@ -362,7 +361,6 @@ def train_transformer(
 
             profile_this_step = profile_enabled and batch_idx == 2
             profile_ctx = nullcontext()
-            prof = None
             if profile_this_step:
                 try:
                     profile_trace_path.parent.mkdir(parents=True, exist_ok=True)

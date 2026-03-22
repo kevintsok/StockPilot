@@ -6,7 +6,7 @@ from typing import Optional
 
 from openai import OpenAI
 
-from ..stock_types import StockScore, StockSnapshot
+from ..core.types import StockScore, StockSnapshot
 from .base import LLMClient, build_prompt
 
 
@@ -118,7 +118,7 @@ class OpenAIClient(LLMClient):
     def _parse_score(text: str) -> float:
         import re
 
-        match = re.search(r"(\d+(?:\.\d+)?)", text)
+        match = re.search(r"(-?\d+(?:\.\d+)?)", text)
         if not match:
             return 0.0
         value = float(match.group(1))

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>选股 - 自然语言筛选</title>
+  <style>
+    :root { --bg:#0b1221; --card:#111827; --text:#e2e8f0; --accent:#58a6ff; --dim:#8b949e; --border:#1f2937; }
+    body { background:var(--bg); color:var(--text); font-family:"Inter","Arial",sans-serif; margin:0; padding:20px; }
+    h1 { margin:0 0 16px; font-size:20px; }
+    .controls { display:flex; gap:8px; margin-bottom:16px; align-items:center; }
+    input[type=text] { flex:1; padding:10px 14px; border-radius:10px; border:1px solid var(--border); background:#0b1221; color:var(--text); font-size:14px; }
+    .btn { padding:10px 18px; border-radius:10px; border:none; font-weight:600; cursor:pointer; background:#2563eb; color:#e2e8f0; }
+    .btn:hover { background:#1d4ed8; }
+    .btn[disabled] { opacity:0.6; cursor:not-allowed; }
+    .meta { color:var(--dim); font-size:13px; margin-bottom:12px; }
+    .meta span { margin-right:16px; }
+    .criteria-str { color:#86efac; }
+    .table-wrap { border:1px solid var(--border); border-radius:10px; overflow:auto; max-height:calc(100vh - 220px); }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th { text-align:left; padding:10px 12px; background:#1c2128; cursor:pointer; user-select:none; white-space:nowrap; position:sticky; top:0; }
+    th:hover { background:#2d333b; }
+    th .arrow { color:var(--accent); margin-left:4px; }
+    td { padding:8px 12px; border-bottom:1px solid #21262d; white-space:nowrap; }
+    tr:hover td { background:rgba(37,99,235,0.08); }
+    .num { text-align:right; font-variant-numeric:tabular-nums; }
+    .pos { color:#3fb950; }
+    .neg { color:#f85149; }
+    .zero { color:var(--text); }
+    th.sorted { color:var(--accent); }
+    .empty { text-align:center; color:var(--dim); padding:48px; }
+  </style>
+</head>
+<body>
+  <h1>自然语言选股</h1>
+  <div class="controls">
+    <input type="text" id="query-input" placeholder="例如: 3个月内涨幅不超过+10%" onkeydown="if(event.key==='Enter')runScreener()" />
+    <button id="btn-run" class="btn" onclick="runScreener()">开始选股</button>
+  </div>
+  <div class="meta" id="meta-row">
+    <span id="row-count"></span>
+    <span class="criteria-str" id="criteria-str"></span>
+  </div>
+  <div class="table-wrap">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th data-key="symbol" onclick="sort('symbol')">股票代码 <span class="arrow"></span></th>
+          <th data-key="name" onclick="sort('name')">名字 <span class="arrow"></span></th>
+          <th data-key="lookback_pct_change" onclick="sort('lookback_pct_change')">N天内涨幅(%) <span class="arrow"></span></th>
+          <th data-key="last_close" onclick="sort('last_close')">最新收盘价 <span class="arrow"></span></th>
+          <th data-key="roe" onclick="sort('roe')">ROE(%) <span class="arrow"></span></th>
+          <th data-key="eps" onclick="sort('eps')">EPS(元) <span class="arrow"></span></th>
+          <th data-key="turnover_rate" onclick="sort('turnover_rate')">换手率(%) <span class="arrow"></span></th>
+          <th data-key="last_date" onclick="sort('last_date')">最新日期 <span class="arrow"></span></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <script>
+    var dir = -1;
+    var lastKey = null;
+
+    function sort(key) {
+      if (lastKey === key) { dir *= -1; } else { dir = -1; lastKey = key; }
+      var tbl = document.getElementById('tbl');
+      var rows = Array.from(tbl.tBodies[0].rows);
+      var colIdx = Array.from(tbl.tHead.rows[0].cells).findIndex(function(c){ return c.dataset.key === key; });
+      if (colIdx < 0) return;
+      document.querySelectorAll('th').forEach(function(h){ h.classList.remove('sorted'); h.querySelector('.arrow').textContent = ''; });
+      var col = tbl.tHead.rows[0].cells[colIdx];
+      col.classList.add('sorted');
+      col.querySelector('.arrow').textContent = dir > 0 ? '▲' : '▼';
+      rows.sort(function(a, b) {
+        var A = a.children[colIdx].textContent.trim();
+        var B = b.children[colIdx].textContent.trim();
+        var NA = A.replace(/[^\d.\-]/g, '');
+        var NB = B.replace(/[^\d.\-]/g, '');
+        if (NA === '' && NB === '') return A > B ? dir : -dir;
+        if (NA === '') return 1;
+        if (NB === '') return -1;
+        return (parseFloat(NA) - parseFloat(NB)) * dir;
+      });
+      var tbody = tbl.tBodies[0];
+      rows.forEach(function(r){ tbody.appendChild(r); });
+    }
+
+    async function runScreener() {
+      var query = document.getElementById('query-input').value.trim();
+      if (!query) return;
+      var btn = document.getElementById('btn-run');
+      btn.disabled = true;
+      btn.textContent = '解析中...';
+      document.getElementById('row-count').textContent = '';
+      document.getElementById('criteria-str').textContent = '';
+      document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty">加载中...</td></tr>';
+      try {
+        var resp = await fetch('/screener', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({query: query})
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        var data = await resp.json();
+        var rows = data.rows || [];
+        var criteriaStr = data.criteria_str || '';
+        document.getElementById('row-count').textContent = '符合条件: ' + rows.length + ' 只';
+        document.getElementById('criteria-str').textContent = '条件: ' + criteriaStr;
+        var tbody = document.getElementById('tbody');
+        tbody.innerHTML = '';
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无符合条件的数据</td></tr>';
+        } else {
+          rows.forEach(function(r) {
+            var tr = document.createElement('tr');
+            var pct = r.lookback_pct_change;
+            var pctClass = pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'zero';
+            tr.innerHTML = '<td>' + r.symbol + '</td>' +
+              '<td>' + r.name + '</td>' +
+              '<td class="num ' + pctClass + '">' + (pct != null ? pct.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.last_close != null ? r.last_close.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.roe != null ? r.roe.toFixed(2) : '-') + '</td>' +
+              '<td class="num">' + (r.eps != null ? r.eps.toFixed(3) : '-') + '</td>' +
+              '<td class="num">' + (r.turnover_rate != null ? r.turnover_rate.toFixed(2) : '-') + '</td>' +
+              '<td>' + (r.last_date || '-') + '</td>';
+            tbody.appendChild(tr);
+          });
+        }
+      } catch(e) {
+        document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty" style="color:#f85149;">错误: ' + e + '</td></tr>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始选股';
+      }
+    }
+  </script>
+</body>
+</html>

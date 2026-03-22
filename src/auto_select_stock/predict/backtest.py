@@ -13,12 +13,12 @@ except Exception:  # noqa: BLE001
     tqdm = None
 
 from ..config import DATA_DIR
-from ..storage import list_symbols, load_stock_history
-from .data import PRICE_FEATURE_COLUMNS, TECHNICAL_FEATURE_COLUMNS, _load_financial_frame, _merge_price_financial, compute_technical_indicators
+from ..data.storage import list_symbols, load_stock_history
+from .data import TECHNICAL_FEATURE_COLUMNS, _load_financial_frame, _merge_price_financial, compute_technical_indicators
 from .inference import PricePredictor
 from .strategy import build_long_short_portfolio
+from .strategies.base import Signal
 
-_TRADING_DAYS = 252
 _A_SHARE_PREFIXES = ("0", "3", "6")  # 沪深主板/中小板/创业板/科创板常用前缀
 _EXCLUDE_PREFIXES = ("688",)  # 科创板（如需排除）
 
@@ -36,6 +36,7 @@ class BacktestConfig:
     base_dir: Path = DATA_DIR
     industry_map: Optional[Dict[str, str]] = None  # symbol -> industry name
     eval_batch_size: int = 64
+    trading_days: int = 252  # Annualization factor forSharpe/volatility calculations
 
 
 @dataclass
@@ -56,18 +57,18 @@ def _parse_date(value: Optional[str | datetime | pd.Timestamp]) -> Optional[pd.T
     return pd.to_datetime(value).normalize()
 
 
-def _annualize_return(daily_ret: pd.Series) -> float:
+def _annualize_return(daily_ret: pd.Series, trading_days: int = 252) -> float:
     if daily_ret.empty:
         return float("nan")
     total_return = (1 + daily_ret).prod()
     periods = len(daily_ret)
-    return total_return ** (_TRADING_DAYS / periods) - 1
+    return total_return ** (trading_days / periods) - 1
 
 
-def _annualize_vol(daily_ret: pd.Series) -> float:
+def _annualize_vol(daily_ret: pd.Series, trading_days: int = 252) -> float:
     if daily_ret.empty:
         return float("nan")
-    return daily_ret.std(ddof=0) * np.sqrt(_TRADING_DAYS)
+    return daily_ret.std(ddof=0) * np.sqrt(trading_days)
 
 
 def _max_drawdown(cumulative: pd.Series) -> float:
@@ -233,19 +234,24 @@ def _collect_signals_batched(
     end_date: Optional[pd.Timestamp],
     show_progress: bool,
     horizon: str = "1d",
-) -> Dict[pd.Timestamp, List[Tuple[str, float, float, Optional[str]]]]:
+) -> Dict[pd.Timestamp, List[Signal]]:
     """
     Collect daily signals across symbols using cross-stock batching to better utilize the device.
 
     Args:
         horizon: prediction horizon for ranking (e.g. "1d", "5d"). Default "1d".
+
+    Returns:
+        Dictionary mapping each target date to a list of Signal objects, each containing
+        the symbol, predicted return, realized return, industry, multi-horizon predictions,
+        entry price, and auction limit flag.
     """
     batch_size = max(1, getattr(cfg, "eval_batch_size", 64))
     device = predictor.device
     close_idx = predictor.close_idx
     mode = getattr(predictor.cfg, "target_mode", "close")
     industry_map = cfg.industry_map or {}
-    daily_signals: Dict[pd.Timestamp, List[Tuple[str, float, float, Optional[str], Optional[Dict[str, float]]]]] = {}
+    daily_signals: Dict[pd.Timestamp, List[Signal]] = {}
 
     # Determine which horizon index to use (for the primary pred_ret stored in tuple)
     h_int = int(horizon.replace("d", ""))
@@ -310,7 +316,15 @@ def _collect_signals_batched(
             realized_ret = float(exit_c / max(entry_c, 1e-6) - 1.0)
             # Signal tuple: (symbol, predicted_ret, realized_ret, industry, predicted_rets, entry_price, auc_limit)
             daily_signals.setdefault(target_dt, []).append(
-                (sym, predicted_ret, realized_ret, industry_map.get(sym), predicted_rets, entry_c, auc_limit)
+                Signal(
+                    symbol=sym,
+                    predicted_ret=predicted_ret,
+                    realized_ret=realized_ret,
+                    industry=industry_map.get(sym),
+                    predicted_rets=predicted_rets,
+                    entry_price=entry_c,
+                    auc_limit=auc_limit,
+                )
             )
             remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
             if remaining_windows[sym] <= 0 and sym in done_symbols:
@@ -371,9 +385,9 @@ def _collect_signals_batched(
             pending_windows.append(normed[idx : idx + seq_len])
             pending_meta.append((sym, idx))
             valid_windows += 1
-            remaining_windows[sym] += 1
             if len(pending_windows) >= batch_size:
                 _flush()
+            remaining_windows[sym] = remaining_windows.get(sym, 0) + 1
         if valid_windows == 0:
             cache.pop(sym, None)
         done_symbols.add(sym)
@@ -406,8 +420,11 @@ def run_backtest(
     cost_rate = (cfg.cost_bps + cfg.slippage_bps) / 10000.0
     date_iter = _progress(dates_sorted, "Rebalance by day", unit="day") if show_progress else dates_sorted
     for dt in date_iter:
+        # daily_signals already contains Signal objects from _collect_signals_batched
+        raw_list = daily_signals[dt]
+        sigs = raw_list
         gross, net, turnover, weights, hhi = build_long_short_portfolio(
-            signals=daily_signals[dt],
+            signals=sigs,
             top_pct=cfg.top_pct,
             allow_short=cfg.allow_short,
             prev_weights=prev_weights,
@@ -425,13 +442,13 @@ def run_backtest(
     cumulative_net = (1 + df["net_ret"]).cumprod()
 
     metrics = {
-        "annual_return_gross": _annualize_return(df["gross_ret"]),
-        "annual_vol_gross": _annualize_vol(df["gross_ret"]),
-        "sharpe_gross": _annualize_return(df["gross_ret"]) / (_annualize_vol(df["gross_ret"]) or np.nan),
+        "annual_return_gross": _annualize_return(df["gross_ret"], cfg.trading_days),
+        "annual_vol_gross": _annualize_vol(df["gross_ret"], cfg.trading_days),
+        "sharpe_gross": _annualize_return(df["gross_ret"], cfg.trading_days) / (_annualize_vol(df["gross_ret"], cfg.trading_days) or np.nan),
         "total_return_gross": float(cumulative.iloc[-1] - 1.0),
-        "annual_return_net": _annualize_return(df["net_ret"]),
-        "annual_vol_net": _annualize_vol(df["net_ret"]),
-        "sharpe_net": _annualize_return(df["net_ret"]) / (_annualize_vol(df["net_ret"]) or np.nan),
+        "annual_return_net": _annualize_return(df["net_ret"], cfg.trading_days),
+        "annual_vol_net": _annualize_vol(df["net_ret"], cfg.trading_days),
+        "sharpe_net": _annualize_return(df["net_ret"], cfg.trading_days) / (_annualize_vol(df["net_ret"], cfg.trading_days) or np.nan),
         "total_return_net": float(cumulative_net.iloc[-1] - 1.0),
         "max_drawdown_gross": _max_drawdown(cumulative),
         "max_drawdown_net": _max_drawdown(cumulative_net),
@@ -525,9 +542,14 @@ def run_topk_strategy(
         cumulative_net *= 1.0 + net
         daily_rets.append((dt, gross, net, turnover, float("nan")))
 
-        pred_map = {sym: pred for sym, pred, *_ in sigs}
-        real_map = {sym: real for sym, _pred, real, *_ in sigs}
+        # Build pred/real maps lazily for O(k) symbols instead of O(n) all signals
         union_syms = set(prev_weights.keys()) | set(weights.keys())
+        pred_map = {}
+        real_map = {}
+        for sym, pred, real, *_ in sigs:
+            if sym in union_syms:
+                pred_map[sym] = pred
+                real_map[sym] = real
         for sym in sorted(union_syms):
             wb = prev_weights.get(sym, 0.0)
             wa = weights.get(sym, 0.0)
@@ -569,13 +591,13 @@ def run_topk_strategy(
     cumulative_net = (1 + df["net_ret"]).cumprod()
 
     metrics = {
-        "annual_return_gross": _annualize_return(df["gross_ret"]),
-        "annual_vol_gross": _annualize_vol(df["gross_ret"]),
-        "sharpe_gross": _annualize_return(df["gross_ret"]) / (_annualize_vol(df["gross_ret"]) or np.nan),
+        "annual_return_gross": _annualize_return(df["gross_ret"], cfg.trading_days),
+        "annual_vol_gross": _annualize_vol(df["gross_ret"], cfg.trading_days),
+        "sharpe_gross": _annualize_return(df["gross_ret"], cfg.trading_days) / (_annualize_vol(df["gross_ret"], cfg.trading_days) or np.nan),
         "total_return_gross": float(cumulative.iloc[-1] - 1.0),
-        "annual_return_net": _annualize_return(df["net_ret"]),
-        "annual_vol_net": _annualize_vol(df["net_ret"]),
-        "sharpe_net": _annualize_return(df["net_ret"]) / (_annualize_vol(df["net_ret"]) or np.nan),
+        "annual_return_net": _annualize_return(df["net_ret"], cfg.trading_days),
+        "annual_vol_net": _annualize_vol(df["net_ret"], cfg.trading_days),
+        "sharpe_net": _annualize_return(df["net_ret"], cfg.trading_days) / (_annualize_vol(df["net_ret"], cfg.trading_days) or np.nan),
         "total_return_net": float(cumulative_net.iloc[-1] - 1.0),
         "max_drawdown_gross": _max_drawdown(cumulative),
         "max_drawdown_net": _max_drawdown(cumulative_net),

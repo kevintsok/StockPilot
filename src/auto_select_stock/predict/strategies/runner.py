@@ -24,7 +24,7 @@ import pandas as pd
 
 from ..backtest import BacktestConfig, _collect_signals_batched, _parse_date, filter_a_share_symbols
 from ..inference import PricePredictor
-from ...storage import list_symbols
+from ...data.storage import list_symbols
 from .base import BaseStrategy, Signal
 
 _TRADING_DAYS = 252
@@ -204,28 +204,17 @@ def run_all_strategies_shared(
         date_iter = tqdm(dates_sorted, desc="Backtesting (shared signals)", unit="day")
 
     # ── 4. 每日循环 ─────────────────────────────────────────────────
+    # Pre-compute price_map and auc_map once per date, avoiding a second O(n) scan.
     for dt in date_iter:
         raw_signals = daily_raw[dt]
-        signals = []
-        for raw in raw_signals:
-            if len(raw) >= 7:
-                s, p, r, i, pred_rets, entry_price, auc_limit = raw[:7]
-            else:  # 向后兼容旧格式
-                s, p, r, i, pred_rets = raw[:5]
-                entry_price = 0.0
-                auc_limit = 0
-            signals.append(Signal(
-                symbol=s, predicted_ret=p, realized_ret=r,
-                industry=i, predicted_rets=pred_rets,
-                entry_price=entry_price, auc_limit=auc_limit,
-            ))
-
-        # 当日价格和涨跌停映射
+        signals: List[Signal] = []
         price_map: Dict[str, float] = {}   # symbol -> T日收盘价（入场价）
         auc_map: Dict[str, int] = {}       # symbol -> 0=none, 1=limit_up, -1=limit_down
-        for s in signals:
-            price_map[s.symbol] = s.entry_price
-            auc_map[s.symbol] = s.auc_limit
+        for raw in raw_signals:
+            # raw is already a Signal object from _collect_signals_batched
+            price_map[raw.symbol] = raw.entry_price
+            auc_map[raw.symbol] = raw.auc_limit
+            signals.append(raw)
 
         # 对每个策略分别计算
         for strat_idx, strat in enumerate(strategies):
@@ -423,7 +412,6 @@ def run_strategy_backtest(
     show_progress: bool = True,
 ) -> StrategyBacktestResult:
     """单策略回测（向后兼容接口）。"""
-    from .registry import make_strategy
 
     start_date = _parse_date(cfg.start_date)
     end_date = _parse_date(cfg.end_date)
@@ -461,14 +449,8 @@ def run_strategy_backtest(
         raw_signals = daily_raw[dt]
         signals = []
         for raw in raw_signals:
-            if len(raw) >= 7:
-                s, p, r, i, pred_rets, entry_price, auc_limit = raw[:7]
-            else:
-                s, p, r, i, pred_rets = raw[:5]
-                entry_price = 0.0
-                auc_limit = 0
-            signals.append(Signal(symbol=s, predicted_ret=p, realized_ret=r, industry=i,
-                                 predicted_rets=pred_rets, entry_price=entry_price, auc_limit=auc_limit))
+            # raw is already a Signal object
+            signals.append(raw)
         realized_map = {s.symbol: s.realized_ret for s in signals}
 
         weights = strategy.select_positions(signals, prev_weights, cache)

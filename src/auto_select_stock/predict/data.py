@@ -11,56 +11,21 @@ import torch
 from torch.utils.data import Dataset
 
 from ..config import DATA_DIR, PREPROCESSED_DIR
-from ..financial_dates import infer_publish_dates
-from ..storage import load_financial, load_stock_history
+from ..core.features import (
+    DEFAULT_FEATURE_COLUMNS,
+    FINANCIAL_FEATURE_COLUMNS,
+    PRICE_FEATURE_COLUMNS,
+    TECHNICAL_FEATURE_COLUMNS,
+)
+from ..data.financial_dates import infer_publish_dates
+from ..data.storage import load_financial, load_stock_history
+
 # Default horizons for multi-horizon prediction
 DEFAULT_HORIZONS = [1, 3, 5, 7, 14, 20]
 
-PRICE_FEATURE_COLUMNS = [
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "amount",
-    "turnover_rate",
-    "volume_ratio",
-    "pct_change",
-    "amplitude",
-    "change_amount",
-]
-# These are forward-filled onto交易日，用于把最新财报指标拼到价格特征后面。
-FINANCIAL_FEATURE_COLUMNS = [
-    "roe",
-    "net_profit_margin",
-    "gross_margin",
-    "operating_cashflow_growth",
-    "debt_to_asset",
-    "eps",
-    "operating_cashflow_per_share",
-]
-DEFAULT_FEATURE_COLUMNS = PRICE_FEATURE_COLUMNS + FINANCIAL_FEATURE_COLUMNS
 TARGET_COLUMN = "close"
 _PREPROCESS_VERSION = 3  # Bumped to include technical indicators
 _DATASET_CACHE_VERSION = 3
-
-# Technical indicator feature columns - computed from price data (no lookahead)
-TECHNICAL_FEATURE_COLUMNS = [
-    "rsi_14",       # Relative Strength Index (14-day)
-    "macd_line",    # MACD line (EMA12 - EMA26)
-    "macd_signal",  # MACD signal line (9-day EMA of MACD)
-    "macd_hist",    # MACD histogram (MACD - Signal)
-    "bb_position",  # Bollinger Band position (0-1, price's position in bands)
-    "bb_width",     # Bollinger Band width (normalized)
-    "volume_ma5",   # Volume MA5 ratio
-    "volume_ma20",  # Volume MA20 ratio
-    "atr_14",       # Average True Range (14-day)
-    "stoch_k",      # Stochastic %K
-    "stoch_d",      # Stochastic %D
-    "obv_ma10",    # OBV MA10 ratio
-    "roc_10",       # Rate of change (10-day)
-    "momentum_10",  # Momentum (10-day)
-]
 
 
 def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:

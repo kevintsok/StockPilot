@@ -1,8 +1,10 @@
 from typing import Dict, List, Optional, Tuple
 
+from .strategies.base import Signal
+
 
 def build_long_short_portfolio(
-    signals: List[Tuple[str, float, float, Optional[str]]],
+    signals: List[Signal],
     top_pct: float,
     allow_short: bool,
     prev_weights: Dict[str, float],
@@ -12,7 +14,7 @@ def build_long_short_portfolio(
     """
     Construct a simple long/short (or long-only) portfolio based on predicted returns.
 
-    signals: list of (symbol, predicted_ret, realized_ret, industry)
+    signals: list of Signal objects
     top_pct: fraction to allocate on each side (0-1)
     allow_short: whether to short the bottom bucket
     prev_weights: previous day's weights for turnover calculation
@@ -24,31 +26,31 @@ def build_long_short_portfolio(
     if not signals:
         return 0.0, 0.0, 0.0, {}, float("nan")
 
-    signals_sorted = sorted(signals, key=lambda x: x[1], reverse=True)
+    signals_sorted = sorted(signals, key=lambda s: s.predicted_ret, reverse=True)
     n = len(signals_sorted)
     pct = min(max(top_pct, 0.0), 1.0)
     top_n = max(1, int(n * pct))
     long_bucket = signals_sorted[:top_n]
-    short_bucket: List[Tuple[str, float, float, Optional[str]]] = signals_sorted[-top_n:] if allow_short else []
+    short_bucket: List[Signal] = signals_sorted[-top_n:] if allow_short else []
 
     weights: Dict[str, float] = {}
     long_alloc = 1.0 if not allow_short else 0.5
     short_alloc = 0.5 if allow_short else 0.0
     if long_bucket:
         w = long_alloc / len(long_bucket)
-        for sym, *_ in long_bucket:
-            weights[sym] = w
+        for sig in long_bucket:
+            weights[sig.symbol] = w
     if short_bucket:
         w = -short_alloc / len(short_bucket)
-        for sym, *_ in short_bucket:
-            weights[sym] = w
+        for sig in short_bucket:
+            weights[sig.symbol] = w
 
     gross_ret = 0.0
-    for sym, _, realized_ret, _ in signals_sorted:
-        w = weights.get(sym)
+    for sig in signals_sorted:
+        w = weights.get(sig.symbol)
         if w is None:
             continue
-        gross_ret += w * realized_ret
+        gross_ret += w * sig.realized_ret
 
     turnover = 0.0
     for sym, w in weights.items():
@@ -62,11 +64,11 @@ def build_long_short_portfolio(
         industry_hhi = float("nan")
     else:
         by_industry: Dict[str, float] = {}
-        for sym, *_pred_ret, industry in signals_sorted:
-            weight = abs(weights.get(sym, 0.0))
+        for sig in signals_sorted:
+            weight = abs(weights.get(sig.symbol, 0.0))
             if weight == 0.0:
                 continue
-            ind = industry_map.get(sym) if industry_map else industry or "UNKNOWN"
+            ind = industry_map.get(sig.symbol) or sig.industry or "UNKNOWN"
             by_industry[ind] = by_industry.get(ind, 0.0) + weight
         industry_hhi = sum(v * v for v in by_industry.values()) if by_industry else float("nan")
 

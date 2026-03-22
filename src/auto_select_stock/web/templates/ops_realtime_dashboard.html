@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Auto Stock 实时看板</title>
+  <style>
+    body { margin:0; padding:16px; font-family:"Inter","Arial",sans-serif; background:#0b1221; color:#e2e8f0; }
+    h1 { margin:0 0 12px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; box-shadow:0 10px 40px rgba(0,0,0,0.35); }
+    .meta { color:#94a3b8; font-size:13px; }
+    .table-wrap { max-height:calc(100vh - 260px); overflow:auto; border-radius:10px; border:1px solid #1f2937; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th, td { padding:10px; border-bottom:1px solid #1f2937; text-align:right; }
+    th { cursor:pointer; color:#93c5fd; position:sticky; top:0; background:#0b1221; }
+    th:first-child, td:first-child { text-align:left; }
+    tr { transition:background-color 0.12s ease, color 0.12s ease; }
+    tr:hover { background:rgba(59,130,246,0.12); }
+    tr.active-row { background:rgba(34,197,94,0.12); }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
+    .pill { padding:6px 10px; border-radius:10px; border:1px solid #1f2937; background:#0f172a; color:#e2e8f0; font-size:13px; }
+    .pill input { margin-right:6px; }
+    .btn { padding:8px 12px; border-radius:10px; border:1px solid #2563eb; background:#2563eb; color:#e2e8f0; cursor:pointer; font-weight:600; }
+    .status { margin-left:8px; }
+    .pos { color:#ef4444; font-weight:600; }
+    .neg { color:#22c55e; font-weight:600; }
+    .zero { color:#e2e8f0; }
+    .detail-title { font-size:18px; margin:0 0 6px; }
+    .chart-head { display:flex; justify-content:space-between; align-items:center; }
+    .chart-block { margin-top:12px; padding:10px; background:#0b1221; border:1px solid #1f2937; border-radius:10px; }
+    .mini-table { margin-top:8px; border:1px solid #1f2937; border-radius:10px; overflow:auto; }
+    .mini-table table { width:100%; border-collapse:collapse; min-width:640px; }
+    .mini-table th, .mini-table td { padding:8px; border-bottom:1px solid #1f2937; font-size:12px; text-align:right; }
+    .mini-table th { text-align:left; color:#93c5fd; background:#0f172a; }
+    .badge { display:inline-block; padding:4px 8px; border-radius:999px; background:#0f172a; border:1px solid #1f2937; font-size:12px; color:#cbd5e1; margin-right:6px; }
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.65); display:none; align-items:center; justify-content:center; z-index:50; padding:16px; }
+    .modal { width:min(1080px, 100%); max-height:90vh; overflow:auto; background:linear-gradient(135deg,#0a1020,#0f172a); border:1px solid #2b3548; border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,0.6); padding:16px; }
+    .modal-header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .modal-close { background:#1f2937; color:#e2e8f0; border:1px solid #334155; width:32px; height:32px; border-radius:10px; cursor:pointer; font-size:18px; line-height:1; }
+    .modal-close:hover { background:#2563eb; border-color:#2563eb; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>实时看板</h1>
+    <div class="controls">
+      <button class="btn" onclick="loadData()">刷新数据</button>
+      <span class="meta status" id="status">加载中...</span>
+    </div>
+    <div class="controls" id="market-filters"></div>
+    <div class="controls" id="filters"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr id="header-row"></tr></thead>
+        <tbody id="body-rows"></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="detail-modal" class="modal-overlay" onclick="closeDetailModal()">
+    <div class="modal" onclick="event.stopPropagation();">
+      <div class="modal-header">
+        <div>
+          <h2 class="detail-title" id="detail-title">点击列表打开详情</h2>
+          <div class="meta" id="detail-meta">展示该股票的历史日线与财务指标。</div>
+        </div>
+        <button class="modal-close" onclick="closeDetailModal()">×</button>
+      </div>
+      <div class="chart-block">
+        <div class="chart-head">
+          <span>历史日线</span>
+          <span class="meta" id="price-meta"></span>
+        </div>
+        <canvas id="price-chart" height="180"></canvas>
+        <div class="mini-table" id="price-last"></div>
+      </div>
+      <div class="chart-block">
+        <div class="chart-head">
+          <span>财务趋势</span>
+          <span class="meta" id="fin-meta"></span>
+        </div>
+        <canvas id="financial-chart" height="180"></canvas>
+        <div class="mini-table" id="financial-table"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const AUTO_REFRESH_MS = 10000;
+    const MARKET_CHECK_MS = 60000;
+    let columns = [];
+    const signedColumns = ["pct_change","pct_5m","pct_60d","pct_ytd","change_amount","rise_speed"];
+    const marketOptions = [
+      {key:"沪市", label:"沪市"},
+      {key:"深市", label:"深市"},
+      {key:"创业板", label:"创业板"},
+      {key:"科创板", label:"科创板"},
+      {key:"北交所", label:"北交所"},
+      {key:"其他", label:"其他"},
+    ];
+    let data = [];
+    let sortKey = "symbol";
+    let sortAsc = true;
+    let visibleKeys = [];
+    let activeMarkets = new Set(marketOptions.map(o => o.key));
+    let columnsReady = false;
+    let selectedSymbol = null;
+    let refreshTimer = null;
+
+    function format(val) {
+      if (val === null || val === undefined || Number.isNaN(val)) return "";
+      if (typeof val === "number") return val.toFixed(2);
+      return val;
+    }
+    function applySignColor(td, key, value) {
+      if (!signedColumns.includes(key) || typeof value !== "number" || Number.isNaN(value)) return;
+      if (value > 0) td.classList.add("pos");
+      else if (value < 0) td.classList.add("neg");
+      else td.classList.add("zero");
+    }
+    function setDetailHeader(symbol, name) {
+      const title = document.getElementById("detail-title");
+      if (!symbol) {
+        title.textContent = "点击列表打开详情";
+        return;
+      }
+      title.textContent = name ? `${symbol} · ${name}` : symbol;
+    }
+    function openDetailModal(symbol, name) {
+      selectedSymbol = symbol;
+      const overlay = document.getElementById("detail-modal");
+      overlay.style.display = "flex";
+      setDetailHeader(symbol, name || "");
+      document.getElementById("detail-meta").textContent = "加载历史数据中...";
+      clearCanvas("price-chart", "加载中...");
+      clearCanvas("financial-chart", "加载中...");
+      renderMiniTable("price-last", [], []);
+      renderMiniTable("financial-table", [], []);
+    }
+    function closeDetailModal() {
+      const overlay = document.getElementById("detail-modal");
+      overlay.style.display = "none";
+    }
+    function clearCanvas(canvasId, message) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const width = canvas.clientWidth || 300;
+      const height = canvas.clientHeight || 180;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      if (message) {
+        ctx.fillStyle = "#64748b";
+        ctx.font = "12px Arial";
+        ctx.fillText(message, 10, height / 2);
+      }
+    }
+    function drawLineChart(canvasId, points, key = "close") {
+      const canvas = document.getElementById(canvasId);
+      if (!points || !points.length) {
+        clearCanvas(canvasId, "暂无数据");
+        return;
+      }
+      const values = points.map(p => p[key]).filter(v => v !== null && v !== undefined && !Number.isNaN(v));
+      if (!values.length) { clearCanvas(canvasId, "暂无数据"); return; }
+      const width = canvas.clientWidth || 320;
+      const height = canvas.clientHeight || 180;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const minVal = Math.min(...values);
+      const maxVal = Math.max(...values);
+      const span = maxVal - minVal || 1;
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      points.forEach((p, idx) => {
+        const val = p[key];
+        if (val === null || val === undefined || Number.isNaN(val)) return;
+        const x = (idx / Math.max(points.length - 1, 1)) * (width - 8) + 4;
+        const y = height - ((val - minVal) / span) * (height - 12) - 6;
+        if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+      });
+      if (!started) { clearCanvas(canvasId, "暂无数据"); return; }
+      ctx.stroke();
+      ctx.fillStyle = "rgba(37, 99, 235, 0.14)";
+      ctx.lineTo(width - 4, height - 4);
+      ctx.lineTo(4, height - 4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    function drawBarChart(canvasId, points, key, color) {
+      const canvas = document.getElementById(canvasId);
+      if (!points || !points.length) { clearCanvas(canvasId, "暂无数据"); return; }
+      const filtered = points.filter(p => Number.isFinite(p[key]));
+      if (!filtered.length) { clearCanvas(canvasId, "暂无数据"); return; }
+      const values = filtered.map(p => p[key]);
+      let width = canvas.clientWidth || 320;
+      const height = canvas.clientHeight || 180;
+      if (!width || width < 40) { width = 480; }
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const maxVal = Math.max(...values);
+      const minVal = Math.min(...values);
+      const span = (maxVal - minVal) || 1;
+      const barWidth = Math.max(4, (width - 12) / filtered.length);
+      filtered.forEach((p, idx) => {
+        const val = p[key];
+        const x = 6 + idx * barWidth;
+        const ratioY = (val - minVal) / span;
+        const y = height - ratioY * (height - 16) - 6;
+        const barHeight = height - y - 6;
+        ctx.fillStyle = color || "#22c55e";
+        ctx.fillRect(x, y, barWidth * 0.8, Math.max(2, barHeight));
+      });
+    }
+    function renderMiniTable(containerId, cols, rows, formatter = format) {
+      const container = document.getElementById(containerId);
+      if (!rows || !rows.length || !cols || !cols.length) {
+        container.innerHTML = '<div class="meta" style="padding:8px;">暂无数据</div>';
+        return;
+      }
+      let html = "<table><thead><tr><th>日期</th>";
+      cols.forEach(col => { html += `<th>${col}</th>`; });
+      html += "</tr></thead><tbody>";
+      rows.forEach(r => {
+        html += `<tr><td>${r.date || ""}</td>`;
+        cols.forEach(col => { html += `<td>${formatter(r[col])}</td>`; });
+        html += "</tr>";
+      });
+      html += "</tbody></table>";
+      container.innerHTML = html;
+    }
+    function renderPriceSection(prices) {
+      const meta = document.getElementById("price-meta");
+      if (!prices || !prices.length) {
+        meta.textContent = "无日线数据";
+        clearCanvas("price-chart", "暂无日线数据");
+        renderMiniTable("price-last", [], []);
+        return;
+      }
+      drawLineChart("price-chart", prices, "close");
+      meta.textContent = `覆盖 ${prices[0].date} - ${prices[prices.length - 1].date} · ${prices.length} 天`;
+      const recent = prices.slice(-6).reverse();
+      renderMiniTable("price-last", ["close", "pct_change", "volume"], recent);
+    }
+    function renderFinancialSection(financial, columnsList) {
+      const meta = document.getElementById("fin-meta");
+      if (!financial || !financial.length) {
+        meta.textContent = "无财务数据";
+        clearCanvas("financial-chart", "暂无财务数据");
+        renderMiniTable("financial-table", [], []);
+        return;
+      }
+      const colsAll = (columnsList && columnsList.length ? columnsList : Object.keys(financial[0]).filter(k => k !== "date"));
+      // Normalize to numeric where possible for charting
+      const normalized = financial.map(row => {
+        const next = {...row};
+        colsAll.forEach(col => {
+          const parsed = parseFloat(row[col]);
+          if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+            next[col] = parsed;
+          }
+        });
+        return next;
+      });
+      const numericCols = colsAll.filter(col => normalized.some(r => Number.isFinite(r[col])));
+      const chartKey = numericCols[0] || colsAll[0];
+      const recent = normalized.slice(-Math.min(12, normalized.length));
+      meta.textContent = `覆盖 ${financial[0].date} - ${financial[financial.length - 1].date} · 采样 ${financial.length} · 指标 ${colsAll.length} · 图表: ${chartKey || "无"}`;
+      if (chartKey) {
+        const chartPoints = recent.map(r => {
+          const val = Number.isFinite(r[chartKey]) ? r[chartKey] : 0;
+          return {...r, [chartKey]: val};
+        });
+        drawBarChart("financial-chart", chartPoints, chartKey, "#22c55e");
+      } else {
+        clearCanvas("financial-chart", "无可用数字指标");
+      }
+      renderMiniTable("financial-table", colsAll, normalized.slice().reverse());
+    }
+    async function loadDetail(symbol, name) {
+      const meta = document.getElementById("detail-meta");
+      try {
+        const resp = await fetch(`/stock-detail?symbol=${encodeURIComponent(symbol)}`);
+        if (!resp.ok) {
+          meta.textContent = "加载失败: " + await resp.text();
+          renderPriceSection([]);
+          renderFinancialSection([], []);
+          return;
+        }
+        const text = await resp.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch (e) {
+          meta.textContent = "解析失败，可能包含非法数值";
+          renderPriceSection([]);
+          renderFinancialSection([], []);
+          console.error("detail payload parse error", e, text);
+          return;
+        }
+        meta.textContent = `最新样本：日线 ${payload.price_count || 0} 条 · 财务 ${payload.financial_count || 0} 条`;
+        renderPriceSection(payload.prices || []);
+        renderFinancialSection(payload.financial || [], payload.financial_columns || []);
+      } catch (e) {
+        meta.textContent = "加载失败: " + e;
+        renderPriceSection([]);
+        renderFinancialSection([], []);
+      }
+    }
+    function renderFilters() {
+      const container = document.getElementById("filters");
+      if (!columns.length) { container.innerHTML = ""; return; }
+      container.innerHTML = "";
+      columns.filter(c => !c.fixed).forEach(col => {
+        const label = document.createElement("label");
+        label.className = "pill";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = visibleKeys.includes(col.key);
+        cb.onchange = () => {
+          if (cb.checked) visibleKeys.push(col.key);
+          else visibleKeys = visibleKeys.filter(k => k !== col.key);
+          renderHeaders();
+          renderRows();
+        };
+        label.appendChild(cb);
+        label.append(col.label);
+        container.appendChild(label);
+      });
+    }
+    function setColumns(newCols) {
+      columns = newCols || [];
+      visibleKeys = columns
+        .filter(c => !c.fixed && c.defaultVisible !== false)
+        .map(c => c.key);
+      columnsReady = true;
+      renderFilters();
+      renderHeaders();
+    }
+    function renderMarketFilters() {
+      const container = document.getElementById("market-filters");
+      container.innerHTML = "";
+      marketOptions.forEach(opt => {
+        const label = document.createElement("label");
+        label.className = "pill";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = activeMarkets.has(opt.key);
+        cb.onchange = () => {
+          if (cb.checked) activeMarkets.add(opt.key);
+          else activeMarkets.delete(opt.key);
+          renderRows();
+          updateStatusCount();
+        };
+        label.appendChild(cb);
+        label.append(opt.label);
+        container.appendChild(label);
+      });
+    }
+    function filteredData() {
+      return data.filter(row => activeMarkets.has(row.market || "其他"));
+    }
+    function renderHeaders() {
+      const header = document.getElementById("header-row");
+      if (!columns.length) { header.innerHTML = ""; return; }
+      header.innerHTML = "";
+      const active = columns.filter(c => c.fixed || visibleKeys.includes(c.key));
+      active.forEach(col => {
+        const th = document.createElement("th");
+        th.textContent = col.label;
+        th.onclick = () => sortBy(col.key);
+        header.appendChild(th);
+      });
+    }
+    function renderRows() {
+      const body = document.getElementById("body-rows");
+      if (!columns.length) { body.innerHTML = ""; return; }
+      body.innerHTML = "";
+      const active = columns.filter(c => c.fixed || visibleKeys.includes(c.key));
+      filteredData().forEach(row => {
+        const tr = document.createElement("tr");
+        if (selectedSymbol && row.symbol === selectedSymbol) {
+          tr.classList.add("active-row");
+        }
+        active.forEach(col => {
+          const td = document.createElement("td");
+          const value = row[col.key];
+          td.textContent = format(value);
+          applySignColor(td, col.key, value);
+          tr.appendChild(td);
+        });
+        tr.onclick = () => {
+          selectedSymbol = row.symbol;
+          renderRows();
+          openDetailModal(row.symbol, row.name);
+          loadDetail(row.symbol, row.name);
+        };
+        body.appendChild(tr);
+      });
+    }
+    function sortBy(key) {
+      if (sortKey === key) sortAsc = !sortAsc; else { sortKey = key; sortAsc = true; }
+      data.sort((a,b) => {
+        const va = a[sortKey]; const vb = b[sortKey];
+        if (va === undefined || va === null) return 1;
+        if (vb === undefined || vb === null) return -1;
+        if (typeof va === "number" && typeof vb === "number") return sortAsc ? va - vb : vb - va;
+        return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      });
+      renderRows();
+    }
+    function updateStatusCount(updatedAt, errorMessage) {
+      const status = document.getElementById("status");
+      if (errorMessage) {
+        status.textContent = "加载失败（使用缓存/空数据）: " + errorMessage;
+        status.style.color = "#fca5a5";
+        return;
+      }
+      const filteredLen = filteredData().length;
+      status.textContent = `已加载 ${data.length} 只股票 · 筛选后 ${filteredLen} · 更新时间 ${updatedAt || ""}`;
+      status.style.color = "#86efac";
+    }
+    async function loadData() {
+      const status = document.getElementById("status");
+      status.textContent = "加载中...";
+      try {
+        const resp = await fetch("/dashboard-data");
+        if (!resp.ok) {
+          status.textContent = "加载失败: " + await resp.text();
+          status.style.color = "#fca5a5";
+          return;
+        }
+        const payload = await resp.json();
+        if (payload.columns && payload.columns.length) {
+          setColumns(payload.columns);
+        }
+        data = payload.rows || [];
+        updateStatusCount(payload.updated_at, payload.error);
+        sortBy(sortKey);
+      } catch (e) {
+        status.textContent = "加载失败: " + e;
+        status.style.color = "#fca5a5";
+      }
+    }
+    function isMarketOpen() {
+      const now = new Date();
+      const day = now.getDay();
+      if (day === 0 || day === 6) return false;
+      const minutes = now.getHours() * 60 + now.getMinutes();
+      const morning = minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30;
+      const afternoon = minutes >= 13 * 60 && minutes <= 15 * 60;
+      return morning || afternoon;
+    }
+    function ensureAutoRefresh() {
+      const status = document.getElementById("status");
+      if (!isMarketOpen()) {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+        status.textContent = "休市中，自动刷新已暂停";
+        status.style.color = "#cbd5e1";
+        return;
+      }
+      if (!refreshTimer) {
+        refreshTimer = setInterval(loadData, AUTO_REFRESH_MS);
+      }
+    }
+    renderMarketFilters();
+    renderFilters();
+    renderHeaders();
+    loadData();
+    ensureAutoRefresh();
+    setInterval(ensureAutoRefresh, MARKET_CHECK_MS);
+
+    async function loadState() {
+      try {
+        const resp = await fetch('/state');
+        if (!resp.ok) return;
+        const state = await resp.json();
+        ['fetch_all','fetch_financials'].forEach(action => {
+          if (state.running && state.running[action]) {
+            toggleButtons(action, true);
+          }
+          if (state.logs && state.logs[action]) {
+            startLogStream(action, state.logs[action]);
+            const logEl = document.getElementById('log_' + action);
+            logEl.textContent = '恢复日志...';
+          }
+        });
+      } catch (e) {
+        console.warn('loadState failed', e);
+      }
+    }
+    loadState();
+
+    function toggleButtons(action, running) {
+      if (action === 'fetch_all') {
+        const startBtn = document.getElementById('btn_start_fetch_all');
+        const stopBtn = document.getElementById('btn_stop_fetch_all');
+        if (!startBtn || !stopBtn) return;
+        startBtn.disabled = running;
+        stopBtn.disabled = false; // always clickable per request
+        stopBtn.classList.toggle('active', running);
+      } else if (action === 'fetch_financials') {
+        const startBtn = document.getElementById('btn_start_fin');
+        const stopBtn = document.getElementById('btn_stop_fin');
+        if (!startBtn || !stopBtn) return;
+        startBtn.disabled = running;
+        stopBtn.disabled = false; // always clickable
+        stopBtn.classList.toggle('active', running);
+      } else if (action === 'backtest_transformer') {
+        const logEl = document.getElementById('log_backtest_transformer');
+        if (logEl && running) {
+          logEl.textContent = '回测任务已启动...';
+        }
+      }
+    }
+  </script>
+</body>
+</html>
