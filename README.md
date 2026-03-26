@@ -93,7 +93,7 @@ python -m auto_select_stock.ops_dashboard
 │                           INPUT  (per timestep)                          │
 │                                                                         │
 │   ┌──────────────────┐  ┌──────────────────┐  ┌───────────────────────┐  │
-│   │  Price (12维)    │  │ Financial (7维)   │  │ Technical (14维)       │  │
+│   │  Price (11维)    │  │ Financial (7维)   │  │ Technical (14维)       │  │
 │   │                  │  │                  │  │                       │  │
 │   │ open             │  │ roe              │  │ rsi_14                │  │
 │   │ high             │  │ net_profit_margin│  │ macd_line             │  │
@@ -111,15 +111,15 @@ python -m auto_select_stock.ops_dashboard
 │   │                  │  │                  │  │ momentum_10           │  │
 │   └────────┬─────────┘  └────────┬─────────┘  └───────────┬───────────┘  │
 │            └────────────────────┼───────────────────────┘              │
-│                                 concat = 33 dimensions                  │
+│                                 concat = 32 dimensions                  │
 └─────────────────────────────────────┬───────────────────────────────────┘
-                                      │ shape: (batch, seq_len=1024, 33)
+                                      │ shape: (batch, seq_len=252, 32)
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          PriceTransformer                                │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  input_proj: Linear(33 → 256)                                    │   │
+│  │  input_proj: Linear(32 → 256)   Parameters: 5.28M               │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                 │                                       │
 │                                 ▼                                       │
@@ -200,10 +200,10 @@ predicted_return (regression head last timestep)
 
 | 类别 | 维度 | 说明 |
 |------|------|------|
-| Price | 12 | OHLC + volume/amount + turnover metrics |
+| Price | 11 | OHLC + volume/amount + turnover metrics |
 | Financial | 7 | ROE, margin, cashflow, debt, EPS — backward-filled from quarterly reports |
 | Technical | 14 | RSI, MACD, Bollinger, volume MA, ATR, Stochastic, OBV, ROC, Momentum |
-| **Total** | **33** | 每 timestep 一个 33 维向量 |
+| **Total** | **32** | 每 timestep 一个 32 维向量 |
 
 ### Key Design Decisions
 
@@ -213,34 +213,41 @@ predicted_return (regression head last timestep)
 - **排序损失**: ListMLE-style hinge loss，优化股票间的相对排序
 - **动态位置编码**: 推理时可处理比训练时更长的序列
 
+### Model Specifications (Full Training)
+
+| Parameter | Value |
+|-----------|-------|
+| Sequence length | 252 (1 trading year) |
+| d_model | 256 |
+| nhead | 8 |
+| num_layers | 10 |
+| dim_feedforward | 512 |
+| Total parameters | 5.28M |
+| Prediction horizons | 1d, 3d, 5d, 7d, 14d, 20d |
+| Training samples | ~825K windows |
+| Validation samples | ~228K windows |
+
 ---
 
-## Backtest Results (2024-06-01 ~ 2025-06-01)
+## Backtest Results (2023-01-01 ~ 2024-12-31)
 
-![Backtest Capital Curve](docs/backtest_diverse_30_capital_curve.png)
+![Backtest Capital Curve](models/price_transformer_full_strategies_comparison.png)
 
-**Model**: `price_transformer_multihorizon_full.pt` — Multi-horizon Transformer (1d/3d/5d/7d/14d/20d heads), 1,677 stocks, seq_len=1024, trained 3 epochs. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。
+**Model**: `price_transformer_full.pt` — PriceTransformer, 3,317 stocks, seq_len=252, trained 1 epoch. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。基准：上证指数 +7.5%，深证成指 -6.3%，创业板 -9.1%。
 
-| Strategy | Tag | Final Capital | Total Ret | Sharpe | Max DD | Avg Turnover |
-|----------|-----|-------------:|----------:|-------:|-------:|-------------:|
-| **RiskParity-VL10-1d** | **469da** | **328,393** | **+228.4%** | **6.75** | **-19.7%** | 64.9% |
-| StopLoss-3pct-5d | 47cda | 272,027 | +172.0% | 6.61 | -16.6% | 63.9% |
-| StopLoss-3pct-1d | fc99f | 188,542 | +88.5% | 3.70 | -16.7% | 52.7% |
-| TopK-K10-1d | 3f274 | 143,469 | +43.5% | 1.67 | -26.1% | 56.4% |
-| RiskParity-VL20-5d | dfe5c | 135,366 | +35.4% | 1.08 | -31.3% | 56.3% |
-| StopLoss-8pct-1d | a1e30 | 128,007 | +28.0% | 1.76 | -9.8% | 23.7% |
-| StopLoss-8pct-5d | 21312 | 115,103 | +15.1% | 1.48 | -6.1% | 23.6% |
-| Momentum-LB5-1d | 7ef00 | 114,655 | +14.7% | 0.44 | -37.1% | 54.4% |
-| TopK-K3-3d | a2b0b | 94,026 | -6.0% | -0.14 | -44.7% | 61.0% |
-| TopK-K10-14d | c8638 | 25,123 | -74.9% | -2.66 | -75.7% | 46.4% |
+| Strategy | Total Ret | Sharpe | Max DD | Annual | WinRate |
+|----------|----------:|-------:|-------:|-------:|--------:|
+| **TopK-K5-1d** | **+184.59%** | **2.026** | **-37.24%** | **72.38%** | **67.75%** |
+| TopK-K5-3d | +99.24% | 1.443 | -30.17% | 43.18% | 54.32% |
+| StopLoss-8pct-1d | +72.87% | 2.040 | -15.07% | 32.98% | 34.09% |
+| TopK-K10-1d | +35.83% | 0.568 | -33.43% | 17.28% | 57.60% |
+| StopLoss-3pct-1d | +14.89% | 0.559 | -27.76% | 7.49% | 42.23% |
 
 **关键洞察**:
-- **RiskParity-VL10-1d [469da] (+228%, Sharpe 6.75)** 压倒性优势 — 波动率倒数加权 + 1日预测完美匹配A股高频交易特性
-- **止损机制是关键**：StopLoss-3pct-5d (+172%) 远胜 StopLoss-8pct-5d (+15%)，3%止损阈值比8%更有效
-- **预测期限越长越危险**：TopK-K3-20d (-88%)、TopK-K3-14d (-91%) 毁灭性亏损，1日/3日预测最可靠
-- **每日推送默认使用 RiskParity-VL10-1d [469da] 策略**
-
-> 每笔交易记录（日期/股票/价格/股数/金额）均完整保存在 JSON 结果中，可逐笔回溯分析。
+- **TopK-K5-1d (+184.59%, Sharpe 2.026)** 最佳策略 — 选取预测收益最高的前5只股票，1日预测期限
+- **预测期限越长收益越差**：TopK-K5-5d (-89%)、TopK-K5-7d (-92%)，说明模型短期预测更准确
+- **持仓集中度影响显著**：K5 明显优于 K10，更集中于最强预测
+- **1日预测显著优于长期**：模型对短期价格变动预测能力强，长期预测易受噪声影响
 
 ---
 
