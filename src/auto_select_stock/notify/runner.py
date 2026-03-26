@@ -13,8 +13,10 @@ Usage:
 """
 
 import argparse
+import datetime
 import sys
 import os
+import subprocess
 from pathlib import Path
 
 # Add src to path for imports
@@ -24,6 +26,44 @@ from .config import PUSHPLUS_TOKEN, NOTIFY_CHECKPOINT, NOTIFY_STRATEGY, NOTIFY_T
 from .push_providers import PushPlusProvider
 from .daily_report import generate_report, get_latest_price_date
 from .holdings import generate_holdings_report
+
+
+def _is_trading_day(db_date_str: str) -> bool:
+    """Check if the DB's latest date is today or yesterday (accounting for weekends)."""
+    if not db_date_str:
+        return False
+    db_date = datetime.datetime.strptime(db_date_str, "%Y-%m-%d").date()
+    today = datetime.date.today()
+    # Allow 1 day gap for weekends (Fri->Mon gap is 3 days, but we only allow 1)
+    diff = (today - db_date).days
+    return diff <= 1
+
+
+def _ensure_fresh_data() -> None:
+    """Ensure the price database is up-to-date before pushing."""
+    latest_date = get_latest_price_date()
+    if _is_trading_day(latest_date):
+        print(f"Database is fresh (latest: {latest_date}), skipping update.")
+        return
+
+    print(f"Database is stale (latest: {latest_date}, today: {datetime.date.today()}).")
+    print("Running update-daily to fetch latest data...")
+
+    # Run update-daily via CLI
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "auto_select_stock.cli",
+            "update-daily",
+        ],
+        env={**os.environ, "PYTHONPATH": "./src"},
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"WARNING: update-daily failed: {result.stderr}", file=sys.stderr)
+    else:
+        new_date = get_latest_price_date()
+        print(f"Update complete. Latest date now: {new_date}")
 
 
 def main() -> None:
@@ -53,6 +93,8 @@ def main() -> None:
         print("ERROR: PUSHPLUS_TOKEN environment variable is not set", file=sys.stderr)
         sys.exit(1)
 
+    # Check and update data if stale
+    _ensure_fresh_data()
     latest_date = get_latest_price_date()
     print(f"Latest price date in DB: {latest_date}")
 
