@@ -16,9 +16,10 @@ from ..core.features import (
     FINANCIAL_FEATURE_COLUMNS,
     PRICE_FEATURE_COLUMNS,
     TECHNICAL_FEATURE_COLUMNS,
+    FUND_FLOW_FEATURE_COLUMNS,
 )
 from ..data.financial_dates import infer_publish_dates
-from ..data.storage import load_financial, load_stock_history
+from ..data.storage import load_financial, load_stock_history, load_fund_flow
 
 # Default horizons for multi-horizon prediction
 DEFAULT_HORIZONS = [1, 3, 5, 7, 14, 20]
@@ -289,6 +290,8 @@ class StreamingPriceDataset(Dataset):
         cache_size: int = 8,
         target_mode: str = "log_return",
         horizons: Optional[List[int]] = None,
+        price_table: str = "price",
+        include_fund_flow: bool = False,
     ):
         self.seq_len = seq_len
         self.stride = max(1, int(stride))
@@ -306,6 +309,8 @@ class StreamingPriceDataset(Dataset):
         self._cache_size = cache_size
         self._preloaded = preloaded_features or {}
         self.target_mode = target_mode
+        self.price_table = price_table  # 'price'=qfq, 'price_hfq'=hfq
+        self.include_fund_flow = include_fund_flow
         self.sample_offsets: List[int] = []
         self._entries: List[_DatasetEntry] = []
         total = 0
@@ -334,11 +339,21 @@ class StreamingPriceDataset(Dataset):
         return self.total_samples
 
     def _load_raw_features(self, symbol: str) -> np.ndarray:
+        # hfq data: always recompute from DB to avoid stale qfq cache
+        if self.price_table == "price_hfq":
+            return load_feature_matrix(
+                symbol, self.price_columns, self.financial_columns,
+                base_dir=self.base_dir, price_table=self.price_table,
+                include_fund_flow=self.include_fund_flow,
+            )
         feats = self._preloaded.get(symbol)
         if feats is None:
             feats = load_cached_features(symbol, self.price_columns, self.financial_columns, self.cache_dir, self.source_mtime)
         if feats is None:
-            feats = load_feature_matrix(symbol, self.price_columns, self.financial_columns, base_dir=self.base_dir)
+            feats = load_feature_matrix(
+                symbol, self.price_columns, self.financial_columns,
+                base_dir=self.base_dir, include_fund_flow=self.include_fund_flow,
+            )
         return feats
 
     def _get_scaled_features(self, symbol: str) -> np.ndarray:
@@ -464,8 +479,18 @@ def load_feature_matrix(
     financial_columns: List[str],
     base_dir: Path = DATA_DIR,
     include_technical: bool = True,
+    price_table: str = "price",
+    include_fund_flow: bool = False,
 ) -> np.ndarray:
-    arr = load_stock_history(symbol, base_dir=base_dir)
+    """Load price history and merge with financial/technical features.
+
+    Args:
+        price_table: Which price table to use.
+            'price'   = qfq (前复权) — correct for current prices / P&L / holdings
+            'price_hfq' = hfq (后复权) — continuous for model training
+        include_fund_flow: If True, merge in 主力资金流 features (filled 0 where missing).
+    """
+    arr = load_stock_history(symbol, base_dir=base_dir, table=price_table)
     df = pd.DataFrame(arr)
     df["date"] = pd.to_datetime(df["date"]).dt.floor("D").astype("datetime64[ns]")
     df.sort_values("date", inplace=True)
@@ -473,6 +498,27 @@ def load_feature_matrix(
     fin_df = _load_financial_frame(symbol, financial_columns, base_dir=base_dir)
     fin_features = _merge_price_financial(df, fin_df, financial_columns)
     base_features = np.concatenate([price_features, fin_features], axis=1)
+
+    # Merge fund_flow features if enabled
+    if include_fund_flow:
+        try:
+            ff_df = load_fund_flow(symbol, base_dir=base_dir)
+            ff_df["date"] = pd.to_datetime(ff_df["date"]).dt.floor("D").astype("datetime64[ns]")
+            ff_df = ff_df[["date"] + FUND_FLOW_FEATURE_COLUMNS].copy()
+            # Left join on date, fill NaN with 0 (most days have no fund_flow data)
+            merged = df[["date"]].merge(ff_df, on="date", how="left")
+            for col in FUND_FLOW_FEATURE_COLUMNS:
+                if col in merged.columns:
+                    merged[col] = merged[col].fillna(0.0)
+                else:
+                    merged[col] = 0.0
+            ff_features = merged[FUND_FLOW_FEATURE_COLUMNS].astype("float32").to_numpy()
+            base_features = np.concatenate([base_features, ff_features], axis=1)
+        except FileNotFoundError:
+            # No fund_flow data for this symbol — fill with zeros
+            ff_zeros = np.zeros((len(df), len(FUND_FLOW_FEATURE_COLUMNS)), dtype="float32")
+            base_features = np.concatenate([base_features, ff_zeros], axis=1)
+
     if not include_technical:
         return base_features
     tech_df = compute_technical_indicators(df)
@@ -662,6 +708,8 @@ def preprocess_symbol_features(
     base_dir: Path = DATA_DIR,
     cache_dir: Optional[Path] = PREPROCESSED_DIR,
     keep_in_memory: bool = True,
+    price_table: str = "price",
+    include_fund_flow: bool = False,
 ) -> Dict[str, np.ndarray]:
     """
     Precompute merged日报/财报特征并落盘，加速后续训练数据组装。
@@ -683,7 +731,7 @@ def preprocess_symbol_features(
         feats = load_cached_features(sym, price_columns, fin_cols, cache_dir, source_mtime)
         if feats is None:
             try:
-                feats = load_feature_matrix(sym, price_columns, fin_cols, base_dir=base_dir)
+                feats = load_feature_matrix(sym, price_columns, fin_cols, base_dir=base_dir, price_table=price_table, include_fund_flow=include_fund_flow)
             except FileNotFoundError:
                 skipped += 1
                 continue
@@ -726,6 +774,8 @@ def prepare_date_window_datasets(
     existing_scaler: Optional[Dict[str, np.ndarray]] = None,
     target_mode: str = "log_return",
     horizons: Optional[List[int]] = None,
+    price_table: str = "price",
+    include_fund_flow: bool = False,
 ) -> List[DatasetWindow]:
     """
     Build datasets for multiple chronological windows defined by train_end/val_end.
@@ -747,12 +797,17 @@ def prepare_date_window_datasets(
         feats = preloaded_features.get(sym) if preloaded_features else None
         if feats is None:
             feats = load_cached_features(sym, price_cols, fin_cols, cache_dir, source_mtime)
-        if feats is None:
+        if feats is None or include_fund_flow:
             try:
-                feats = load_feature_matrix(sym, price_cols, fin_cols, base_dir=base_dir)
+                feats = load_feature_matrix(
+                    sym, price_cols, fin_cols,
+                    base_dir=base_dir, price_table=price_table,
+                    include_fund_flow=include_fund_flow,
+                )
             except FileNotFoundError:
                 return None
-            write_cached_features(sym, feats, price_cols, fin_cols, cache_dir, source_mtime)
+            if not include_fund_flow:
+                write_cached_features(sym, feats, price_cols, fin_cols, cache_dir, source_mtime)
         return feats
 
     def _load_dates(sym: str) -> Optional[np.ndarray]:
@@ -841,6 +896,8 @@ def prepare_date_window_datasets(
             source_mtime=source_mtime,
             target_mode=target_mode,
             horizons=horizons,
+            price_table=price_table,
+            include_fund_flow=include_fund_flow,
         )
         train_len = len(train_ds)
         val_ds = StreamingPriceDataset(
@@ -858,6 +915,8 @@ def prepare_date_window_datasets(
             source_mtime=source_mtime,
             target_mode=target_mode,
             horizons=horizons,
+            price_table=price_table,
+            include_fund_flow=include_fund_flow,
         )
         val_len = len(val_ds)
         test_ds = StreamingPriceDataset(
@@ -875,6 +934,8 @@ def prepare_date_window_datasets(
             source_mtime=source_mtime,
             target_mode=target_mode,
             horizons=horizons,
+            price_table=price_table,
+            include_fund_flow=include_fund_flow,
         )
         test_ds = test_ds if len(test_ds) > 0 else None
         name = f"{state['train_end'].date()}_{state['val_end'].date()}"
@@ -917,6 +978,8 @@ def prepare_datasets(
     existing_scaler: Optional[Dict[str, np.ndarray]] = None,
     target_mode: str = "log_return",
     horizons: Optional[List[int]] = None,
+    price_table: str = "price",
+    include_fund_flow: bool = False,
 ) -> Tuple[StreamingPriceDataset, StreamingPriceDataset, Dict[str, np.ndarray], List[str]]:
     price_cols = price_columns or PRICE_FEATURE_COLUMNS
     fin_cols = financial_columns or all_financial_columns(base_dir)
@@ -931,12 +994,17 @@ def prepare_datasets(
         feats = preloaded_features.get(sym) if preloaded_features else None
         if feats is None:
             feats = load_cached_features(sym, price_cols, fin_cols, cache_dir, source_mtime)
-        if feats is None:
+        if feats is None or include_fund_flow:
             try:
-                feats = load_feature_matrix(sym, price_cols, fin_cols, base_dir=base_dir)
+                feats = load_feature_matrix(
+                    sym, price_cols, fin_cols,
+                    base_dir=base_dir, price_table=price_table,
+                    include_fund_flow=include_fund_flow,
+                )
             except FileNotFoundError:
                 return None
-            write_cached_features(sym, feats, price_cols, fin_cols, cache_dir, source_mtime)
+            if not include_fund_flow:
+                write_cached_features(sym, feats, price_cols, fin_cols, cache_dir, source_mtime)
         return feats
 
     # Streaming scaler computation to avoid stacking all features.
@@ -1012,6 +1080,8 @@ def prepare_datasets(
         source_mtime=source_mtime,
         target_mode=target_mode,
         horizons=horizons,
+        price_table=price_table,
+        include_fund_flow=include_fund_flow,
     )
     val_ds = StreamingPriceDataset(
         splits,
@@ -1028,6 +1098,8 @@ def prepare_datasets(
         source_mtime=source_mtime,
         target_mode=target_mode,
         horizons=horizons,
+        price_table=price_table,
+        include_fund_flow=include_fund_flow,
     )
     print(
         f"[Dataset] symbols={len(splits)} train_samples={len(train_ds)} val_samples={len(val_ds)} "

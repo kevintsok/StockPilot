@@ -31,6 +31,20 @@ FINANCIAL_FEATURE_COLUMNS = [
 
 DEFAULT_FEATURE_COLUMNS = PRICE_FEATURE_COLUMNS + FINANCIAL_FEATURE_COLUMNS
 
+# Fund flow feature columns (主力资金流 — merged onto price dates, NaN filled with 0)
+FUND_FLOW_FEATURE_COLUMNS = [
+    "main_net_inflow",
+    "main_net_pct",
+    "super_net_inflow",
+    "super_net_pct",
+    "big_net_inflow",
+    "big_net_pct",
+    "mid_net_inflow",
+    "mid_net_pct",
+    "small_net_inflow",
+    "small_net_pct",
+]
+
 # Technical indicator feature columns - computed from price data (no lookahead)
 TECHNICAL_FEATURE_COLUMNS = [
     "rsi_14",  # Relative Strength Index (14-day)

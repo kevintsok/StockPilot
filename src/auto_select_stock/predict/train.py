@@ -69,6 +69,7 @@ def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: f
 from ..core.torch_model import PriceTransformer, TrainConfig
 from .checkpoints import load_training_checkpoint, save_checkpoint
 from .data import (
+    FUND_FLOW_FEATURE_COLUMNS,
     PRICE_FEATURE_COLUMNS,
     TECHNICAL_FEATURE_COLUMNS,
     all_financial_columns,
@@ -236,11 +237,14 @@ def train_transformer(
     scaler: Optional[Dict[str, np.ndarray]] = None,
     resume_state: Optional[Dict[str, object]] = None,
     test_ds: Optional[Dataset] = None,
+    include_fund_flow: bool = False,
 ) -> Dict[str, float]:
     device = _device(cfg)
     if cfg.technical_columns is None:
         cfg.technical_columns = TECHNICAL_FEATURE_COLUMNS
     feature_columns = cfg.price_columns + cfg.financial_columns + cfg.technical_columns
+    if include_fund_flow:
+        feature_columns = feature_columns + FUND_FLOW_FEATURE_COLUMNS
     if not hasattr(cfg, "exact_resume"):
         cfg.exact_resume = True
     if getattr(cfg, "base_seed", None) is None:
@@ -535,6 +539,8 @@ def train_from_symbols(
     symbols: Iterable[str],
     cfg: TrainConfig,
     base_dir: Path = DATA_DIR,
+    price_table: str = "price",
+    include_fund_flow: bool = False,
 ) -> Dict[str, float]:
     symbols = list(symbols)
     price_cols = cfg.price_columns or PRICE_FEATURE_COLUMNS
@@ -550,11 +556,14 @@ def train_from_symbols(
     for attr, default in [("target_mode", "log_return"), ("weight_decay", 1e-4), ("grad_clip", 1.0)]:
         if not hasattr(cfg, attr):
             setattr(cfg, attr, default)
-    keep_in_memory = getattr(cfg, "keep_preprocessed_in_memory", False)
+    keep_in_memory = getattr(cfg, "keep_preprocessed_in_memory", True)
     tech_cols = TECHNICAL_FEATURE_COLUMNS
     if cfg.technical_columns is None:
         cfg.technical_columns = tech_cols
     total_features = len(price_cols) + len(fin_cols) + len(tech_cols)
+    if include_fund_flow:
+        total_features += len(FUND_FLOW_FEATURE_COLUMNS)
+        print(f"[Train] fund_flow features enabled: {len(FUND_FLOW_FEATURE_COLUMNS)} extra columns")
     # Compute model parameter count early for visibility
     tmp_model = PriceTransformer(input_dim=total_features, horizons=cfg.horizons)
     param_count = sum(p.numel() for p in tmp_model.parameters()) / 1e6
@@ -606,6 +615,8 @@ def train_from_symbols(
             base_dir=base_dir,
             cache_dir=cache_dir,
             keep_in_memory=keep_in_memory,
+            price_table=price_table,
+            include_fund_flow=include_fund_flow,
         )
     with _time_block("Prepare datasets"):
         if parsed_windows:
@@ -622,6 +633,8 @@ def train_from_symbols(
                 existing_scaler=scaler_for_windows,
                 target_mode=getattr(cfg, "target_mode", "log_return"),
                 horizons=cfg.horizons,
+                price_table=price_table,
+                include_fund_flow=include_fund_flow,
             )
         else:
             train_ds, val_ds, scaler, feature_columns = prepare_datasets(
@@ -637,6 +650,8 @@ def train_from_symbols(
                 existing_scaler=resume_scaler,
                 target_mode=getattr(cfg, "target_mode", "log_return"),
                 horizons=cfg.horizons,
+                price_table=price_table,
+                include_fund_flow=include_fund_flow,
             )
     if parsed_windows:
         results: Dict[str, Dict[str, float]] = {}
@@ -656,12 +671,13 @@ def train_from_symbols(
                     scaler=window.scaler,
                     resume_state=window_resume,
                     test_ds=window.test_ds,
+                    include_fund_flow=include_fund_flow,
                 )
             stats["checkpoint"] = window_cfg.save_path
             results[window.name] = stats
         return results
 
     with _time_block("Training loop"):
-        stats = train_transformer(train_ds, val_ds, cfg, scaler=scaler, resume_state=resume_state)
+        stats = train_transformer(train_ds, val_ds, cfg, scaler=scaler, resume_state=resume_state, include_fund_flow=include_fund_flow)
     stats["checkpoint"] = cfg.save_path
     return stats

@@ -162,7 +162,7 @@ def cmd_train_transformer(args):
         keep_preprocessed_in_memory=args.preprocess_in_memory,
         profile=getattr(args, "profile", False),
     )
-    stats = train_from_symbols(symbols, cfg, base_dir=DATA_DIR)
+    stats = train_from_symbols(symbols, cfg, base_dir=DATA_DIR, price_table=args.price_table, include_fund_flow=args.include_fund_flow)
     if isinstance(stats, dict) and "best_val_loss" not in stats:
         print("Training finished for date windows:")
         for name, window_stats in stats.items():
@@ -561,6 +561,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="预处理后把特征缓存留在内存中，加速组装数据集（占用更高内存）",
     )
     p_train.add_argument("--profile", action="store_true", help="使用 torch.profiler 记录第 2 个 step（保存到 reports/）")
+    p_train.add_argument(
+        "--price-table",
+        default="price_hfq",
+        choices=["price", "price_hfq"],
+        help="训练使用的价格表: price=前复权(qfq), price_hfq=后复权 (默认 price_hfq, 后复权适合训练连续性)",
+    )
+    p_train.add_argument(
+        "--include-fund-flow",
+        action="store_true",
+        help="在训练中加入主力资金流特征 (fund_flow)",
+    )
     p_train.set_defaults(exact_resume=True)
     p_train.set_defaults(func=cmd_train_transformer)
 
