@@ -61,12 +61,15 @@ class Signal:
     realized_ret: float  # actual realized return (entry at T close, exit at T+1 close)
     industry: Optional[str] = None  # for sector-neutral strategies
     predicted_rets: Optional[Dict[str, float]] = None  # e.g. {"3d": 0.05, "5d": 0.08, ...}
-    entry_price: float = 0.0   # T's close price (execution price for buying)
+    entry_price: float = 0.0   # T's close price (previous day's close; for auction check)
     auc_limit: int = 0         # 0=none, 1=limit_up(cannot buy), -1=limit_down(cannot sell)
+    next_open: float = 0.0     # T+1's open price (buy execution price)
+    next_close: float = 0.0    # T+1's close price (sell execution price)
+    split_move: float = 0.0    # raw close-to-close move that was filtered (e.g. 0.20 = +20% split); 0 if normal
 
     # Tuple index map for backward-compatible __getitem__
     _FIELDS = ("symbol", "predicted_ret", "realized_ret", "industry",
-               "predicted_rets", "entry_price", "auc_limit")
+               "predicted_rets", "entry_price", "auc_limit", "next_open", "next_close", "split_move")
 
     def __getitem__(self, index: int):
         """Allow tuple-style indexing (e.g. sig[1]) while preserving attribute access."""

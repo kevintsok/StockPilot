@@ -4,15 +4,19 @@
 核心思路：
 1. _collect_signals_batched() 一次性收集所有股票所有日期的信号（一次GPU推理）
 2. 对每个策略，遍历每日信号调用 select_positions()，获得当日权重
-3. 以仓位（股数）为单位追踪资金账户，买入/卖出执行于当日收盘价
+3. 以仓位（股数）为单位追踪资金账户
 4. 所有策略共享同一次信号收集，避免重复推理
 
-资金模型：
+资金模型（T+1 规则）：
 - 起始资金：100,000 RMB
 - 最小交易单位：100股（A股规则）
-- 涨停股（开盘涨幅≥9.5%）无法买入
-- 跌停股（开盘跌幅≤-9.5%）无法卖出
-- 卖出价 = 当日收盘价，买入价 = 当日收盘价（同价格执行，清算当日持仓）
+- 涨停股（T+1开盘涨幅≥9.5%）无法买入
+- 跌停股（T+1开盘跌幅≤-9.5%）无法卖出
+- 买入执行价 = T+1 开盘价
+- 卖出执行价 = T+1 收盘价
+- T+1 规则：今日买 → 明日才可卖（T日买的股票今日不可卖）
+- 资金规则：T日收盘卖出所得 → T+1才可用（冻结一日）
+- 持仓跨日保留：不在目标中的才卖出，不强制每日清仓
 """
 
 from dataclasses import dataclass, field
@@ -41,10 +45,10 @@ _AUC_LIMIT_THRESHOLD = 0.095   # 涨/跌幅超过此值认为涨跌停
 @dataclass
 class Trade:
     """单笔交易记录"""
-    date: str          # 交易日期（T日，执行于T日收盘）
+    date: str          # 交易日期（T+1）
     symbol: str        # 股票代码
     action: str        # "buy" 或 "sell"
-    price: float       # 成交价格（当日收盘价）
+    price: float       # 成交价格（买入=开盘价，卖出=收盘价）
     shares: int        # 成交股数（100的倍数）
     amount: float     # 成交金额 = price × shares
     reason: str = ""  # 附加说明（如 "auc_limit_up" 表示因涨停无法买入）
@@ -204,116 +208,163 @@ def run_all_strategies_shared(
         date_iter = tqdm(dates_sorted, desc="Backtesting (shared signals)", unit="day")
 
     # ── 4. 每日循环 ─────────────────────────────────────────────────
-    # Pre-compute price_map and auc_map once per date, avoiding a second O(n) scan.
+    # frozen_cash_list: List[float] 每个策略的冻结资金（T日收盘卖出 → T+1才可用）
+    frozen_cash_list: List[float] = [0.0 for _ in strategies]
+    # position_entry_dates_list: 每个策略的持仓买入日期追踪 {symbol: entry_date_str}
+    position_entry_dates_list: List[Dict[str, str]] = [{} for _ in strategies]
+
     for dt in date_iter:
         raw_signals = daily_raw[dt]
         signals: List[Signal] = []
-        price_map: Dict[str, float] = {}   # symbol -> T日收盘价（入场价）
-        auc_map: Dict[str, int] = {}       # symbol -> 0=none, 1=limit_up, -1=limit_down
+        # price_map: symbol -> T日收盘价（卖出价），auc_map: symbol -> 涨跌停标志
+        price_map: Dict[str, float] = {}
+        auc_map: Dict[str, int] = {}
+        # next_open_map: symbol -> T+1开盘价（买入价）
+        next_open_map: Dict[str, float] = {}
+        # next_close_map: symbol -> T+1收盘价（卖出价，用于更新持仓）
+        next_close_map: Dict[str, float] = {}
         for raw in raw_signals:
-            # raw is already a Signal object from _collect_signals_batched
-            price_map[raw.symbol] = raw.entry_price
+            price_map[raw.symbol] = raw.entry_price   # T日收盘：卖出价
             auc_map[raw.symbol] = raw.auc_limit
+            next_open_map[raw.symbol] = raw.next_open   # T+1开盘：买入价
+            next_close_map[raw.symbol] = raw.next_close # T+1收盘：持仓股市值计算
             signals.append(raw)
 
         # 对每个策略分别计算
         for strat_idx, strat in enumerate(strategies):
             positions = positions_list[strat_idx]
-            cash = cash_state_list[strat_idx]  # 延续上日现金
+            cash = cash_state_list[strat_idx]  # 延续上日现金（不含当日卖出所得）
+            frozen = frozen_cash_list[strat_idx]  # 当日收盘卖出所得，T+1才可用
+            entry_dates = position_entry_dates_list[strat_idx]
             prev_w = prev_weights_list[strat_idx]
             cache = cache_list[strat_idx]
             trades = trades_list[strat_idx]
 
-            # ── 4a. 卖出昨日持仓 ─────────────────────────────────────
-            # 卖出执行于 T日收盘价（与昨日收盘价相同，即 T日收盘 = T-1日收盘 → 实质等于清算昨日持仓）
-            sell_cash = 0.0  # 卖出所得现金
+            # ── 4a. 结算昨日卖出所得 ──────────────────────────────
+            # 昨日卖出所得今日解冻
+            available_cash = cash + frozen
+            sell_cash_today = 0.0  # 今日卖出所得（冻结至明日）
+
+            # ── 4b. 决定目标持仓 ─────────────────────────────────
+            weights = strat.select_positions(signals, prev_w, cache)
+            pos_weights = {s: w for s, w in weights.items() if w > 0}
+            target_syms = set(pos_weights.keys())
+
+            # ── 4c. 卖出不在目标中的持仓（遵守T+1限制）──────────
+            # T+1规则：今天买的股票不能今天卖 → 检查 entry_date
             sell_symbols = list(positions.keys())
             for sym in sell_symbols:
+                entry_date_str = entry_dates.get(sym)
+                # 不能卖：今天买的（entry_date == 今天）
+                if entry_date_str == dt.strftime("%Y-%m-%d"):
+                    continue
                 pos = positions[sym]
-                entry_p = pos["entry_price"]
                 shares = pos["shares"]
-                sell_price = price_map.get(sym, entry_p)  # 如果没有该股信号，用入场价
+                # 卖出价：T日收盘价（price_map里有）
+                sell_price = price_map.get(sym, pos["entry_price"])
                 sell_amount = shares * sell_price
-                sell_cash += sell_amount
+                sell_cash_today += sell_amount
                 trades.append(Trade(
                     date=dt.strftime("%Y-%m-%d"), symbol=sym,
                     action="sell", price=sell_price, shares=shares,
                     amount=sell_amount,
                 ))
-            # 清空所有持仓
-            positions.clear()
+                # 从持仓中移除
+                del positions[sym]
+                del entry_dates[sym]
 
-            # ── 4b. 策略决策（基于所有信号，不受涨跌停影响预测）────────
-            weights = strat.select_positions(signals, prev_w, cache)
-            # 权重归一化（仅针对可交易的，正权的）
-            pos_weights = {s: w for s, w in weights.items() if w > 0}
-            total_w = sum(pos_weights.values())
-            if total_w <= 0:
-                # 没有可买信号，全仓现金
-                target_weights = {}
-            else:
-                # 可用现金 = 现有现金 + 卖出所得
-                alloc_cash = cash + sell_cash
-                target_weights = {s: w / total_w * alloc_cash for s, w in pos_weights.items()}
+            # ── 4d. 持仓更新（没被卖出的，entry_price更新为T+1收盘）─
+            # 对于仍持有的仓位：用 next_close 更新 entry_price（下一日计算收益用）
+            # 但分拆股票（auc_limit=2）不更新——next_close 是分拆价，
+            # 更新会导致 entry_price 虚增，进而扭曲后续 realized_ret。
+            for sym in list(positions.keys()):
+                if sym in next_close_map and auc_map.get(sym) != 2:
+                    positions[sym]["entry_price"] = next_close_map[sym]
 
-            # ── 4c. 买入新持仓（贪心：能买就买，分配金额不足则跳过）────
-            # 按分配金额降序处理（分配金额大的优先买）
+            # ── 4e. 买入新目标持仓（用开盘价，可用现金中支出）────
+            # 可用现金 = 昨日结余现金 + 已解冻的昨日卖出所得
+            # 今日卖出所得暂时不可用
             buy_cash = 0.0
             new_weights: Dict[str, float] = {}
-            remaining_cash = cash + sell_cash  # 初始可用现金
+            remaining_cash = available_cash  # 初始可用现金
 
-            for sym, alloc in sorted(target_weights.items(), key=lambda x: x[1], reverse=True):
+            for sym, weight in sorted(pos_weights.items(), key=lambda x: x[1], reverse=True):
+                if sym in positions:
+                    continue  # 已持有，跳过
                 auc = auc_map.get(sym, 0)
-                price = price_map.get(sym, 0.0)
-                if price <= 0 or auc == 1:  # 无价格或涨停：无法买入
+                buy_price = next_open_map.get(sym, 0.0)  # 开盘价买入
+                if buy_price <= 0 or auc == 1 or auc == 2:  # 无价格或涨停或分拆：无法买入
                     trades.append(Trade(
                         date=dt.strftime("%Y-%m-%d"), symbol=sym,
-                        action="buy", price=price, shares=0,
+                        action="buy", price=buy_price, shares=0,
                         amount=0.0, reason="no_price_or_limit_up"
                     ))
                     continue
-                max_possible = int(alloc // price // _LOT_SIZE) * _LOT_SIZE
-                if max_possible >= _LOT_SIZE:
-                    cost = max_possible * price
+                # weight 是仓位权重（0~1），转成可用现金中的实际配额
+                cash_for_pos = weight * remaining_cash
+                max_possible = int(cash_for_pos // buy_price // _LOT_SIZE) * _LOT_SIZE
+                if max_possible >= _LOT_SIZE and cash_for_pos >= max_possible * buy_price:
+                    cost = max_possible * buy_price
                     positions[sym] = {
                         "shares": max_possible,
-                        "entry_price": price,
-                        "entry_date": dt.strftime("%Y-%m-%d"),
+                        "entry_price": buy_price,      # 买入价（next_open）
+                        "entry_date": dt.strftime("%Y-%m-%d"),  # 买入日期（明天才能卖）
                     }
+                    entry_dates[sym] = dt.strftime("%Y-%m-%d")
                     buy_cash += cost
                     remaining_cash -= cost
-                    new_weights[sym] = cost / ((cash + sell_cash) or 1.0)
+                    new_weights[sym] = cost / (available_cash or 1.0)
                     trades.append(Trade(
                         date=dt.strftime("%Y-%m-%d"), symbol=sym,
-                        action="buy", price=price, shares=max_possible,
+                        action="buy", price=buy_price, shares=max_possible,
                         amount=cost,
                     ))
                 else:
-                    # 买不起1手（分配金额不够）
                     trades.append(Trade(
                         date=dt.strftime("%Y-%m-%d"), symbol=sym,
-                        action="buy", price=price, shares=0,
+                        action="buy", price=buy_price, shares=0,
                         amount=0.0, reason="insufficient_capital"
                     ))
 
-            # ── 4d. 当日结算 ─────────────────────────────────────────
-            # 现金 = 上日现金 + 卖出所得 - 买入消耗
-            cash = cash + sell_cash - buy_cash
+            # ── 4f. 当日结算 ──────────────────────────────────────
+            # 现金变化：- 买入消耗 + 卖出所得
+            # 今日卖出所得冻结，明日才解冻
+            cash = available_cash - buy_cash
+            frozen_cash_list[strat_idx] = sell_cash_today
             cash_state_list[strat_idx] = cash
-            # 持仓市值 = sum(shares × T日收盘价)
-            holdings_val = sum(
-                pos["shares"] * price_map.get(sym, pos["entry_price"])
-                for sym, pos in positions.items()
-            )
-            portfolio_val = cash + holdings_val
-            # 计算当日收益率（相对昨日组合价值）
+            # DEBUG
+            if strat_idx == 0 and len(capital_list[0]) < 5:
+                holdings_val_debug = sum(
+                    (pos["shares"] * (pos["entry_price"] if pos.get("entry_date") == dt.strftime("%Y-%m-%d") else price_map.get(sym, pos["entry_price"])))
+                    for sym, pos in positions.items()
+                )
+                print(f"  [DEBUG] date={dt.date()} cash={cash:.0f} frozen={frozen:.0f} holdings_val={holdings_val_debug:.0f} "
+                      f"portfolio_val={cash+frozen+holdings_val_debug:.0f} prev={capital_list[0][-1] if capital_list[0] else _INITIAL_CAPITAL:.0f} "
+                      f"buy_cash={buy_cash:.0f} sell_cash={sell_cash_today:.0f} positions={len(positions)}")
+            # 持仓市值计算：
+            # - 原有持仓：用 T 日收盘价
+            # - 当天新建仓（entry_date == 今天）：用 entry_price（成本价）
+            # - 分拆股（auc_limit=2）：用 entry_price（分拆前的价格），避免市值虚增
+            holdings_val = 0.0
+            today_str = dt.strftime("%Y-%m-%d")
+            for sym, pos in positions.items():
+                if pos.get("entry_date") == today_str:
+                    # 当天新建仓：用买入价（成本）估值
+                    holdings_val += pos["shares"] * pos["entry_price"]
+                elif auc_map.get(sym) == 2:
+                    # 分拆股票：用 entry_price（未分拆价），不用 price_map（分拆后价格）
+                    holdings_val += pos["shares"] * pos["entry_price"]
+                else:
+                    # 原有持仓：用 T 日收盘价
+                    holdings_val += pos["shares"] * price_map.get(sym, pos["entry_price"])
+            portfolio_val = cash + frozen + holdings_val
+            # 计算当日收益率
             prev_capital = capital_list[strat_idx][-1] if capital_list[strat_idx] else _INITIAL_CAPITAL
             gross = (portfolio_val / prev_capital - 1.0) if prev_capital > 0 else 0.0
-            # 换手率 = |买入金额 + 卖出金额| / 2 / 昨日组合价值
-            total_trade_val = sell_cash + buy_cash
+            # 换手率
+            total_trade_val = sell_cash_today + buy_cash
             turnover = total_trade_val / (2.0 * prev_capital) if prev_capital > 0 else 0.0
             net = gross
-            # 行业 HHI
             hhi = _build_industry_hhi({s: w for s, w in new_weights.items()}, industry_map)
 
             # 记录
@@ -326,7 +377,7 @@ def run_all_strategies_shared(
             holdings_val_list[strat_idx].append(holdings_val)
             cash_list[strat_idx].append(cash)
 
-            # 策略 on_day_end hook（传入 realized_ret map）
+            # 策略 on_day_end hook
             realized_map = {s.symbol: s.realized_ret for s in signals}
             strat.on_day_end(dt.strftime("%Y-%m-%d"), new_weights, realized_map, cache)
 

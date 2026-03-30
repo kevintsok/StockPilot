@@ -231,9 +231,9 @@ predicted_return (regression head last timestep)
 
 ## Backtest Results (2023-01-01 ~ 2024-12-31)
 
-![Backtest Capital Curve](models/price_transformer_full_strategies_comparison.png)
+![Backtest Capital Curve](models/backtest_results_full_capital_curve.png)
 
-**Model**: `price_transformer_full.pt` — PriceTransformer, 3,317 stocks, seq_len=252, trained 1 epoch. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。基准：上证指数 +7.5%，深证成指 -6.3%，创业板 -9.1%。
+**Model**: `price_transformer_full.pt` — PriceTransformer, 3,317 stocks, seq_len=252, trained on data through 2026-03-26. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖，分裂/送股记录为价格跳变（auc_limit=2屏蔽）。**所有策略均为纯做多（A股不允许做空）**。基准：上证指数 +7.5%，深证成指 -6.3%，创业板 -9.1%。图表过滤 max_drawdown > -80% 的策略。
 
 | Strategy | Total Ret | Sharpe | Max DD | Annual | WinRate |
 |----------|----------:|-------:|-------:|-------:|--------:|

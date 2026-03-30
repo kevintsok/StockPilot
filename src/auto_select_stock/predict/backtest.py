@@ -284,16 +284,15 @@ def _collect_signals_batched(
             preds = last_step.detach().cpu().numpy().tolist()
         for batch_i, (pred_last, (sym, idx)) in enumerate(zip(preds, pending_meta)):
             info = cache[sym]
-            entry_c = float(info["entry_close"][idx])   # T's close (entry price)
-            exit_c = float(info["exit_close"][idx])     # T+1's close (exit price)
-            entry_o = float(info["entry_open"][idx])    # T's open (for auction check)
-            prev_c = float(info["prev_close"][idx])     # T-1's close (for auction check)
-            # Auction limit: A-share limit is ±10% from previous close
-            open_ret = entry_o / prev_c - 1.0 if prev_c > 0 else 0.0
+            entry_c = float(info["entry_close"][idx])   # T's close (sell price for existing position)
+            next_o = float(info["next_open"][idx])      # T+1's open (buy price for new position)
+            next_c = float(info["exit_close"][idx])     # T+1's close (sell price for new position)
+            # Auction limit based on T+1 open vs T close (not T open vs T-1 close)
+            open_ret = next_o / entry_c - 1.0 if entry_c > 0 else 0.0
             auc_limit = 0  # 0=none, 1=limit_up (can't buy), -1=limit_down (can't sell)
-            if open_ret >= 0.095:      # opened at limit-up (涨停)
+            if open_ret >= 0.095:      # T+1 opened at limit-up (涨停，无法买入)
                 auc_limit = 1
-            elif open_ret <= -0.095:   # opened at limit-down (跌停)
+            elif open_ret <= -0.095:   # T+1 opened at limit-down (跌停，无法卖出)
                 auc_limit = -1
             target_dt = pd.Timestamp(info["next_dates"][idx])  # T+1
             scaler_mean = info["scaler_mean"]
@@ -313,8 +312,32 @@ def _collect_signals_batched(
                     pc = p * scaler_std[close_idx] + scaler_mean[close_idx]
                     predicted_rets[f"{h}d"] = float(pc / entry_c - 1.0)
             # realized_ret: entry at T's close, exit at T+1's close (proper 1-day return)
-            realized_ret = float(exit_c / max(entry_c, 1e-6) - 1.0)
-            # Signal tuple: (symbol, predicted_ret, realized_ret, industry, predicted_rets, entry_price, auc_limit)
+            # Filter out stock splits: when close-to-close return exceeds ±15%, it's almost
+            # certainly a bonus-share event or data error, not a real return.
+            raw_realized = float(next_c / max(entry_c, 1e-6) - 1.0)
+            if abs(raw_realized) > 0.15:
+                # Stock split / bonus-share — record the split magnitude so the runner
+                # can handle it. We do NOT force-close; instead auc_limit=2 prevents new
+                # buys and realized_ret=0 avoids polluting daily returns. The 4d step
+                # will NOT update entry_price for this symbol (split stocks are handled
+                # separately), so the position value stays consistent across the split.
+                daily_signals.setdefault(target_dt, []).append(
+                    Signal(
+                        symbol=sym,
+                        predicted_ret=predicted_ret,
+                        realized_ret=0.0,   # zero so it doesn't affect portfolio return
+                        industry=industry_map.get(sym),
+                        predicted_rets=predicted_rets,
+                        entry_price=entry_c,
+                        auc_limit=2,          # 2 = split occurred, no new buys
+                        next_open=next_o,
+                        next_close=next_c,
+                        split_move=raw_realized,
+                    )
+                )
+                remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
+                continue
+            realized_ret = raw_realized
             daily_signals.setdefault(target_dt, []).append(
                 Signal(
                     symbol=sym,
@@ -322,8 +345,10 @@ def _collect_signals_batched(
                     realized_ret=realized_ret,
                     industry=industry_map.get(sym),
                     predicted_rets=predicted_rets,
-                    entry_price=entry_c,
+                    entry_price=entry_c,   # T's close: sell price for existing position
                     auc_limit=auc_limit,
+                    next_open=next_o,      # T+1's open: buy price for new position
+                    next_close=next_c,     # T+1's close: sell price for new position
                 )
             )
             remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
@@ -368,6 +393,7 @@ def _collect_signals_batched(
             "exit_close": exit_close,
             "prev_close": prev_close,
             "entry_open": entry_open,
+            "next_open": opens[seq_len + 1:],   # T+1 open price, shape (num_windows,)
             "dates": window_dates,
             "next_dates": next_dates,
             "scaler_mean": scaler_mean,
