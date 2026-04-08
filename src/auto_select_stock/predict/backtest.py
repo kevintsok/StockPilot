@@ -137,8 +137,9 @@ def _build_feature_frame(
     price_columns: List[str],
     financial_columns: List[str],
     base_dir: Path,
+    table: str = "price_hfq",
 ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
-    arr = load_stock_history(symbol, base_dir=base_dir)
+    arr = load_stock_history(symbol, base_dir=base_dir, table=table)
     price_df = pd.DataFrame(arr)
     price_df["date"] = pd.to_datetime(price_df["date"]).dt.normalize()
     price_df.sort_values("date", inplace=True)
@@ -167,7 +168,10 @@ def _collect_signals_for_symbol(
     """
     price_cols = predictor.cfg.price_columns
     fin_cols = predictor.cfg.financial_columns
-    dates_df, features, closes, opens = _build_feature_frame(symbol, price_cols, fin_cols, base_dir)
+    dates_df, features, closes, opens = _build_feature_frame(
+        symbol, price_cols, fin_cols, base_dir,
+        table=getattr(predictor.cfg, "price_table", "price_hfq"),
+    )
     dates = dates_df["date"].to_numpy()
     seq_len = predictor.cfg.seq_len
     if len(features) < seq_len + 1:
@@ -360,7 +364,8 @@ def _collect_signals_batched(
     symbols_iter = _progress_items(symbols, "Collect signals") if show_progress else symbols
     for sym in symbols_iter:
         dates_df, features, closes, opens = _build_feature_frame(
-            sym, predictor.cfg.price_columns, predictor.cfg.financial_columns, cfg.base_dir
+            sym, predictor.cfg.price_columns, predictor.cfg.financial_columns, cfg.base_dir,
+            table=getattr(predictor.cfg, "price_table", "price_hfq"),
         )
         dates = dates_df["date"].to_numpy()
         seq_len = predictor.cfg.seq_len
@@ -377,7 +382,6 @@ def _collect_signals_batched(
         num_windows = len(normed) - seq_len
         if num_windows <= 0:
             continue
-
         # FIX: entry price = T's close (not T-1's close).
         # context ends at T-1 (closes[seq_len-1+idx]), model predicts close[T]/close[T-1]-1.
         # We execute at T's close, hold to T+1 close: realized_ret = close[T+1]/close[T]-1.
@@ -387,6 +391,12 @@ def _collect_signals_batched(
         entry_open = opens[seq_len:-1]      # open at T (for auction limit check)
         window_dates = dates[seq_len - 1 : -1]   # T date (= context end = prediction date)
         next_dates = dates[seq_len + 1:]          # T+1 date (= target date = exit date)
+
+        # Defensive: ensure num_windows matches next_dates length
+        safe_num_windows = min(num_windows, len(next_dates))
+        if safe_num_windows < num_windows:
+            print(f"[Debug] {sym}: num_windows {num_windows} > len(next_dates) {len(next_dates)}, truncating")
+        num_windows = safe_num_windows
 
         cache[sym] = {
             "entry_close": entry_close,

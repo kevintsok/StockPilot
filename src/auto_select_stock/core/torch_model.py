@@ -209,4 +209,5 @@ class TrainConfig:
     lr_warmup_steps: int = 500  # warmup steps before cosine annealing
     lr_min: float = 1e-6  # minimum LR for cosine annealing
     horizons: List[int] = field(default_factory=lambda: DEFAULT_HORIZONS.copy())
+    price_table: str = "price_hfq"  # price (qfq) or price_hfq (hfq)
 __all__ = ["PriceTransformer", "TrainConfig", "DEFAULT_HORIZONS"]
