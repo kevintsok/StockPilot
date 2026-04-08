@@ -253,6 +253,36 @@ predicted_return (regression head last timestep)
 
 ---
 
+## Backtest Results (2025-04-01 ~ 2026-03-27)
+
+![Top-10 Strategies by Sharpe](models/price_transformer_2025_top10_sharpe_comparison.png)
+
+![Top-10 Strategies Metrics](models/price_transformer_2025_top10_sharpe_metrics_bar.png)
+
+**Model**: `price_transformer_2025-train20250331-val20260327.pt` — PriceTransformer, 4,588 stocks, seq_len=252, trained on data ≤ 2025-03-31, validated on 2025-04-01 ~ 2026-03-27. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖（auc_limit=2）。**所有策略均为纯做多**。回测了 50 个策略，按夏普比率排序取前 10。
+
+| Strategy | Total Ret | Sharpe | Max DD | Annual |
+|----------|----------:|-------:|-------:|-------:|
+| **Conf-MC5bp-5d** | **+155.5%** | **0.366** | -54.4% | +167.8% |
+| StopLoss-3pct-5d | +117.0% | 0.258 | -52.9% | +125.6% |
+| StopLoss-3pct-5d+ML5 | +117.0% | 0.258 | -52.9% | +125.6% |
+| Momentum-LB5-5d | +104.8% | 0.255 | -52.9% | +112.3% |
+| TopK-K5-5d+ML5 | +104.8% | 0.255 | -52.9% | +112.3% |
+| StopLoss-2pct-5d | +109.2% | 0.254 | -52.9% | +117.1% |
+| TopK-K5-5d+SL2 | +109.2% | 0.254 | -52.9% | +117.1% |
+| StopLoss-2pct-5d+ML5 | +109.2% | 0.254 | -52.9% | +117.1% |
+| TopK-K3-5d+SL2 | +133.4% | 0.249 | -70.1% | +143.5% |
+| TopK-K10-5d | +81.3% | 0.239 | -50.5% | +86.8% |
+
+**关键洞察**:
+- **Conf-MC5bp-5d（置信度加权，最低信心度 5bp，5d预测期）夏普最高 0.366**，总收益 +155.5%
+- **5d 预测期整体优于其他期限**：3d/7d/14d 策略普遍不如 5d
+- **止损 + 动量组合策略表现稳健**：StopLoss-2/3% + ML5 组合多次出现于前 10
+- **1d 预测期策略普遍为负夏普**：说明短期预测波动太大，难以稳定盈利
+- **10 个最优策略均配置 2-3% 止损保护**，有效控制最大回撤在 -55% 左右
+
+---
+
 ## Available Strategies
 
 所有策略均为**纯做多**（A股不允许做空），利用模型6个预测期限（1d/3d/5d/7d/14d/20d）的多信号优势。
