@@ -1,0 +1,62 @@
+[
+  {"name": "TopK-K2-5d", "description": "TopK-2 5d，K=2降低集中度", "type": "topk", "horizon": "5d", "params": {"top_k": 2, "allow_short": false}, "tag": "tk2a1"},
+  {"name": "TopK-K2-7d", "description": "TopK-2 7d，K=2降低集中度", "type": "topk", "horizon": "7d", "params": {"top_k": 2, "allow_short": false}, "tag": "tk2b2"},
+  {"name": "TopK-K2-14d", "description": "TopK-2 14d，K=2降低集中度", "type": "topk", "horizon": "14d", "params": {"top_k": 2, "allow_short": false}, "tag": "tk2c3"},
+  {"name": "TopK-K3-14d", "description": "TopK-3 14d，中等集中", "type": "topk", "horizon": "14d", "params": {"top_k": 3, "allow_short": false}, "tag": "tk3d4"},
+  {"name": "TopK-K5-14d", "description": "TopK-5 14d，适度分散", "type": "topk", "horizon": "14d", "params": {"top_k": 5, "allow_short": false}, "tag": "tk5e5"},
+
+  {"name": "SL-1pct-5d+K3", "description": "TopK-3 + 超紧止损1% 5d", "type": "trailing_stop", "horizon": "5d", "params": {"top_k": 3, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1f6"},
+  {"name": "SL-1pct-7d+K3", "description": "TopK-3 + 超紧止损1% 7d", "type": "trailing_stop", "horizon": "7d", "params": {"top_k": 3, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1g7"},
+  {"name": "SL-1pct-14d+K2", "description": "TopK-2 + 超紧止损1% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 2, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1h8"},
+  {"name": "SL-1pct-14d+K3", "description": "TopK-3 + 超紧止损1% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 3, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1i9"},
+  {"name": "SL-1pct-14d+K5", "description": "TopK-5 + 超紧止损1% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 5, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1j10"},
+  {"name": "SL-1pct-20d+K2", "description": "TopK-2 + 超紧止损1% 20d", "type": "trailing_stop", "horizon": "20d", "params": {"top_k": 2, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1k11"},
+  {"name": "SL-1pct-20d+K3", "description": "TopK-3 + 超紧止损1% 20d", "type": "trailing_stop", "horizon": "20d", "params": {"top_k": 3, "stop_loss": 0.01, "allow_short": false}, "tag": "sl1l12"},
+
+  {"name": "SL-1p5-5d+K3", "description": "TopK-3 + 紧止损1.5% 5d", "type": "trailing_stop", "horizon": "5d", "params": {"top_k": 3, "stop_loss": 0.015, "allow_short": false}, "tag": "sl15m13"},
+  {"name": "SL-1p5-7d+K3", "description": "TopK-3 + 紧止损1.5% 7d", "type": "trailing_stop", "horizon": "7d", "params": {"top_k": 3, "stop_loss": 0.015, "allow_short": false}, "tag": "sl15n14"},
+  {"name": "SL-1p5-14d+K2", "description": "TopK-2 + 紧止损1.5% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 2, "stop_loss": 0.015, "allow_short": false}, "tag": "sl15o15"},
+  {"name": "SL-1p5-14d+K3", "description": "TopK-3 + 紧止损1.5% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 3, "stop_loss": 0.015, "allow_short": false}, "tag": "sl15p16"},
+  {"name": "SL-1p5-20d+K2", "description": "TopK-2 + 紧止损1.5% 20d", "type": "trailing_stop", "horizon": "20d", "params": {"top_k": 2, "stop_loss": 0.015, "allow_short": false}, "tag": "sl15q17"},
+
+  {"name": "SL-2pct-5d+K2", "description": "TopK-2 + 止损2% 5d", "type": "trailing_stop", "horizon": "5d", "params": {"top_k": 2, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2r18"},
+  {"name": "SL-2pct-7d+K2", "description": "TopK-2 + 止损2% 7d", "type": "trailing_stop", "horizon": "7d", "params": {"top_k": 2, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2s19"},
+  {"name": "SL-2pct-14d+K2", "description": "TopK-2 + 止损2% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 2, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2t20"},
+  {"name": "SL-2pct-14d+K3", "description": "TopK-3 + 止损2% 14d", "type": "trailing_stop", "horizon": "14d", "params": {"top_k": 3, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2u21"},
+  {"name": "SL-2pct-20d+K2", "description": "TopK-2 + 止损2% 20d", "type": "trailing_stop", "horizon": "20d", "params": {"top_k": 2, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2v22"},
+  {"name": "SL-2pct-20d+K3", "description": "TopK-3 + 止损2% 20d", "type": "trailing_stop", "horizon": "20d", "params": {"top_k": 3, "stop_loss": 0.02, "allow_short": false}, "tag": "sl2w23"},
+
+  {"name": "ML3-5d+K3", "description": "TopK-3 + 动量过滤LB=3 5d", "type": "momentum_filter", "horizon": "5d", "params": {"top_k": 3, "lookback": 3, "threshold": 0.0, "allow_short": false}, "tag": "ml3x24"},
+  {"name": "ML5-5d+K3", "description": "TopK-3 + 动量过滤LB=5 5d", "type": "momentum_filter", "horizon": "5d", "params": {"top_k": 3, "lookback": 5, "threshold": 0.0, "allow_short": false}, "tag": "ml5y25"},
+  {"name": "ML3-14d+K3", "description": "TopK-3 + 动量过滤LB=3 14d", "type": "momentum_filter", "horizon": "14d", "params": {"top_k": 3, "lookback": 3, "threshold": 0.0, "allow_short": false}, "tag": "ml3z26"},
+  {"name": "ML5-14d+K3", "description": "TopK-3 + 动量过滤LB=5 14d", "type": "momentum_filter", "horizon": "14d", "params": {"top_k": 3, "lookback": 5, "threshold": 0.0, "allow_short": false}, "tag": "ml5aa27"},
+  {"name": "ML10-14d+K3", "description": "TopK-3 + 动量过滤LB=10 14d", "type": "momentum_filter", "horizon": "14d", "params": {"top_k": 3, "lookback": 10, "threshold": 0.0, "allow_short": false}, "tag": "ml10ab28"},
+  {"name": "ML5-20d+K2", "description": "TopK-2 + 动量过滤LB=5 20d", "type": "momentum_filter", "horizon": "20d", "params": {"top_k": 2, "lookback": 5, "threshold": 0.0, "allow_short": false}, "tag": "ml5ac29"},
+  {"name": "ML10-20d+K2", "description": "TopK-2 + 动量过滤LB=10 20d", "type": "momentum_filter", "horizon": "20d", "params": {"top_k": 2, "lookback": 10, "threshold": 0.0, "allow_short": false}, "tag": "ml10ad30"},
+
+  {"name": "RP-VL20-5d+K3", "description": "波动率加权K=3 VL=20 5d", "type": "risk_parity", "horizon": "5d", "params": {"top_k": 3, "allow_short": false, "vol_lookback": 20}, "tag": "rp20ae31"},
+  {"name": "RP-VL20-5d+K5", "description": "波动率加权K=5 VL=20 5d", "type": "risk_parity", "horizon": "5d", "params": {"top_k": 5, "allow_short": false, "vol_lookback": 20}, "tag": "rp20af32"},
+  {"name": "RP-VL20-14d+K3", "description": "波动率加权K=3 VL=20 14d", "type": "risk_parity", "horizon": "14d", "params": {"top_k": 3, "allow_short": false, "vol_lookback": 20}, "tag": "rp20ag33"},
+  {"name": "RP-VL20-14d+K5", "description": "波动率加权K=5 VL=20 14d", "type": "risk_parity", "horizon": "14d", "params": {"top_k": 5, "allow_short": false, "vol_lookback": 20}, "tag": "rp20ah34"},
+  {"name": "RP-VL30-14d+K3", "description": "波动率加权K=3 VL=30 14d", "type": "risk_parity", "horizon": "14d", "params": {"top_k": 3, "allow_short": false, "vol_lookback": 30}, "tag": "rp30ai35"},
+
+  {"name": "Th-0pct-5d+K3", "description": "预测>0%入场 TopK-3 5d", "type": "threshold", "horizon": "5d", "params": {"top_k": 3, "threshold": 0.0, "allow_short": false}, "tag": "th0aj36"},
+  {"name": "Th-0pct-14d+K3", "description": "预测>0%入场 TopK-3 14d", "type": "threshold", "horizon": "14d", "params": {"top_k": 3, "threshold": 0.0, "allow_short": false}, "tag": "th0ak37"},
+  {"name": "Th-0pct-20d+K2", "description": "预测>0%入场 TopK-2 20d", "type": "threshold", "horizon": "20d", "params": {"top_k": 2, "threshold": 0.0, "allow_short": false}, "tag": "th0al38"},
+
+  {"name": "MR-K3-5d", "description": "逆向策略 买最差3只 5d", "type": "mean_reversion", "horizon": "5d", "params": {"top_k": 3, "allow_short": false}, "tag": "mrev3am39"},
+  {"name": "MR-K3-14d", "description": "逆向策略 买最差3只 14d", "type": "mean_reversion", "horizon": "14d", "params": {"top_k": 3, "allow_short": false}, "tag": "mrev3an40"},
+  {"name": "MR-K5-5d", "description": "逆向策略 买最差5只 5d", "type": "mean_reversion", "horizon": "5d", "params": {"top_k": 5, "allow_short": false}, "tag": "mrev5ao41"},
+
+  {"name": "LS-Top5pct-5d", "description": "多空 做多top5% 做空bottom5% 5d", "type": "long_short", "horizon": "5d", "params": {"top_pct": 0.05, "allow_short": true}, "tag": "ls5ap42"},
+  {"name": "LS-Top5pct-14d", "description": "多空 做多top5% 做空bottom5% 14d", "type": "long_short", "horizon": "14d", "params": {"top_pct": 0.05, "allow_short": true}, "tag": "ls5aq43"},
+  {"name": "LS-Top10pct-14d", "description": "多空 做多top10% 做空bottom10% 14d", "type": "long_short", "horizon": "14d", "params": {"top_pct": 0.1, "allow_short": true}, "tag": "ls10ar44"},
+
+  {"name": "DT-1pct-5d+K3", "description": "双阈值 >1%做多<-1%做空 TopK-3 5d", "type": "dual_thresh", "horizon": "5d", "params": {"upper_thresh": 0.01, "lower_thresh": -0.01, "top_k": 3}, "tag": "dt1as45"},
+  {"name": "DT-1pct-14d+K3", "description": "双阈值 >1%做多<-1%做空 TopK-3 14d", "type": "dual_thresh", "horizon": "14d", "params": {"upper_thresh": 0.01, "lower_thresh": -0.01, "top_k": 3}, "tag": "dt1at46"},
+  {"name": "DT-2pct-14d+K3", "description": "双阈值 >2%做多<-2%做空 TopK-3 14d", "type": "dual_thresh", "horizon": "14d", "params": {"upper_thresh": 0.02, "lower_thresh": -0.02, "top_k": 3}, "tag": "dt2au47"},
+
+  {"name": "Conf-10bp-5d+K3", "description": "置信度加权 min=10bp TopK-3 5d", "type": "confidence", "horizon": "5d", "params": {"top_k": 3, "allow_short": false, "min_confidence": 0.01}, "tag": "cf10av48"},
+  {"name": "Conf-10bp-14d+K3", "description": "置信度加权 min=10bp TopK-3 14d", "type": "confidence", "horizon": "14d", "params": {"top_k": 3, "allow_short": false, "min_confidence": 0.01}, "tag": "cf10aw49"},
+  {"name": "Conf-20bp-14d+K3", "description": "置信度加权 min=20bp TopK-3 14d", "type": "confidence", "horizon": "14d", "params": {"top_k": 3, "allow_short": false, "min_confidence": 0.02}, "tag": "cf20ax50"}
+]

@@ -379,7 +379,11 @@ class MeanReversionStrategy(BaseStrategy):
 
 
 class ConfidenceStrategy(BaseStrategy):
-    """Weight by absolute predicted return (confidence), long-only."""
+    """Weight by absolute predicted return (confidence), long-only.
+
+    Optional stop-loss and take-profit protect existing positions.
+    Entry prices are tracked via cache["_conf_ep"] (symbol -> entry close price).
+    """
 
     name = "Confidence-Sized"
 
@@ -389,6 +393,8 @@ class ConfidenceStrategy(BaseStrategy):
         allow_short: bool = False,
         min_confidence: float = 0.005,
         horizon: str = "1d",
+        stop_loss_pct: float = 0.0,
+        take_profit_pct: float = 0.0,
         name: str = None,
         tag: str = None,
     ):
@@ -396,6 +402,8 @@ class ConfidenceStrategy(BaseStrategy):
         self.top_k = top_k
         self.allow_short = allow_short
         self.min_confidence = min_confidence
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
 
     def select_positions(
         self,
@@ -403,6 +411,28 @@ class ConfidenceStrategy(BaseStrategy):
         prev_weights: Dict[str, float],
         cache: Dict[str, Any],
     ) -> Dict[str, float]:
+        ep_cache = cache.setdefault("_conf_ep", {})   # symbol -> entry close price
+        held_cache = cache.setdefault("_conf_held", set())  # symbols held
+
+        # Build price maps from today's signals
+        entry_close_map = {s.symbol: s.entry_price for s in signals}
+        next_close_map = {s.symbol: s.next_close for s in signals}
+
+        # ── Stop-loss / take-profit on previously held positions ─────
+        if self.stop_loss_pct > 0 or self.take_profit_pct > 0:
+            for sym in list(held_cache):
+                entry_px = ep_cache.get(sym)
+                if entry_px is None:
+                    held_cache.discard(sym)
+                    continue
+                curr_px = next_close_map.get(sym, entry_px)
+                pct = (curr_px / entry_px) - 1.0 if entry_px > 0 else 0.0
+                if pct < -self.stop_loss_pct or pct > self.take_profit_pct:
+                    # Exit triggered — do NOT include in new target weights
+                    held_cache.discard(sym)
+                    ep_cache.pop(sym, None)
+
+        # ── Determine candidate signals ───────────────────────────────
         if self.allow_short:
             long_sigs = [s for s in signals if self._get_predicted_ret(s) > self.min_confidence]
             short_sigs = [s for s in signals if self._get_predicted_ret(s) < -self.min_confidence]
@@ -416,6 +446,14 @@ class ConfidenceStrategy(BaseStrategy):
         if not all_sigs:
             return {}
 
+        # ── Update entry prices for newly selected positions ───────────
+        for s in all_sigs:
+            if s.symbol not in held_cache:
+                ep_cache[s.symbol] = s.next_close  # buy at next_open, hold value = next_close
+
+        held_cache.update(s.symbol for s in all_sigs)
+
+        # ── Compute confidence weights ───────────────────────────────
         total_conf = sum(abs(self._get_predicted_ret(s)) for s in all_sigs)
         if total_conf <= 0:
             return {}
@@ -431,6 +469,174 @@ class ConfidenceStrategy(BaseStrategy):
             else:
                 weights[s.symbol] = short_alloc * conf
         return weights
+
+    def on_day_end(
+        self,
+        date: str,
+        weights: Dict[str, float],
+        realized_rets: Dict[str, float],
+        cache: Dict[str, Any],
+    ) -> None:
+        """Update entry prices to today's close for still-held positions."""
+        ep_cache = cache.setdefault("_conf_ep", {})
+        held_cache = cache.setdefault("_conf_held", set())
+        # entry_price is already updated by runner for each position;
+        # for our cache: positions that are still held will have their
+        # entry_price updated by the runner via positions[sym]["entry_price"].
+        # We just need to sync our cache for the symbols we're tracking.
+        # The runner stores portfolio info in cache["_portfolio"] — read it.
+        portfolio = cache.get("_portfolio", {})
+        for sym in list(held_cache):
+            pos = portfolio.get(sym)
+            if pos is not None:
+                ep_cache[sym] = pos.get("entry_price", ep_cache.get(sym, 0.0))
+            else:
+                # Position no longer held — clean up
+                held_cache.discard(sym)
+                ep_cache.pop(sym, None)
+
+
+# ----------------------------------------------------------------------
+# 7b. Confidence with Stop/Take-Profit + Max-Holding (confidence_stop)
+# ----------------------------------------------------------------------
+
+
+class ConfidenceStopStrategy(BaseStrategy):
+    """Confidence-weighted strategy with stop-loss, take-profit, and max-holding-day exits.
+
+    Uses ``cache["_cstop_ep"]`` for entry prices and ``cache["_cstop_days"]`` for
+    holding-day counters.  Market regime filter skips trading when the median
+    ``volume_ratio`` across all signals exceeds ``vol_ratio_thresh``.
+    """
+
+    name = "ConfidenceStop"
+
+    def __init__(
+        self,
+        top_k: int = 10,
+        min_confidence: float = 0.005,
+        horizon: str = "1d",
+        stop_loss_pct: float = 0.03,
+        take_profit_pct: float = 0.08,
+        max_holding_days: int = 10,
+        vol_ratio_thresh: float = 0.0,
+        name: str = None,
+        tag: str = None,
+    ):
+        super().__init__(horizon=horizon, name=name, tag=tag)
+        self.top_k = top_k
+        self.min_confidence = min_confidence
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_holding_days = max_holding_days
+        self.vol_ratio_thresh = vol_ratio_thresh
+
+    def select_positions(
+        self,
+        signals: List[Signal],
+        prev_weights: Dict[str, float],
+        cache: Dict[str, Any],
+    ) -> Dict[str, float]:
+        ep_cache = cache.setdefault("_cstop_ep", {})
+        days_cache = cache.setdefault("_cstop_days", {})
+        held_cache = cache.setdefault("_cstop_held", set())
+
+        entry_close_map = {s.symbol: s.entry_price for s in signals}
+        next_close_map = {s.symbol: s.next_close for s in signals}
+
+        # ── Market regime filter ───────────────────────────────────────
+        if self.vol_ratio_thresh > 0:
+            ratios = [s.context.get("volume_ratio", 1.0) for s in signals if s.context]
+            if ratios:
+                median_ratio = sorted(ratios)[len(ratios) // 2]
+                if median_ratio > self.vol_ratio_thresh:
+                    # Extreme market — hold existing positions but don't add new ones
+                    kept = {s: ep_cache.get(s) for s in held_cache if s in entry_close_map}
+                    if not kept:
+                        return {}
+                    kept_sigs = [s for s in signals if s.symbol in kept]
+                    return self._build_weights(kept_sigs, cache, held=False)
+            # Not skipping — proceed with normal logic
+            pass
+
+        # ── Stop-loss / take-profit / max-holding on held positions ──
+        to_remove = set()
+        for sym in held_cache:
+            entry_px = ep_cache.get(sym)
+            if entry_px is None:
+                to_remove.add(sym)
+                continue
+            curr_px = next_close_map.get(sym, entry_px)
+            pct = (curr_px / entry_px) - 1.0 if entry_px > 0 else 0.0
+            holding_days = days_cache.get(sym, 0)
+            if pct < -self.stop_loss_pct or pct > self.take_profit_pct or holding_days >= self.max_holding_days:
+                to_remove.add(sym)
+
+        for sym in to_remove:
+            held_cache.discard(sym)
+            ep_cache.pop(sym, None)
+            days_cache.pop(sym, None)
+
+        # ── Select top candidates ──────────────────────────────────────
+        candidates = [s for s in signals if self._get_predicted_ret(s) > self.min_confidence]
+        top_sigs = sorted(candidates, key=lambda s: self._get_predicted_ret(s), reverse=True)[: self.top_k]
+        if not top_sigs:
+            # Keep existing held positions if no new candidates
+            if held_cache:
+                kept_sigs = [s for s in signals if s.symbol in held_cache]
+                return self._build_weights(kept_sigs, cache, held=False)
+            return {}
+
+        # ── Record entry prices for new positions ─────────────────────
+        for s in top_sigs:
+            if s.symbol not in held_cache:
+                ep_cache[s.symbol] = s.next_close
+                days_cache[s.symbol] = 0
+            held_cache.add(s.symbol)
+
+        # ── Increment holding days for all held ──────────────────────
+        for sym in held_cache:
+            days_cache[sym] = days_cache.get(sym, 0) + 1
+
+        return self._build_weights(top_sigs, cache, held=False)
+
+    def _build_weights(
+        self,
+        sigs: List[Signal],
+        cache: Dict[str, Any],
+        held: bool = True,
+    ) -> Dict[str, float]:
+        if not sigs:
+            return {}
+        total_conf = sum(abs(self._get_predicted_ret(s)) for s in sigs)
+        if total_conf <= 0:
+            return {}
+        weights = {}
+        for s in sigs:
+            conf = abs(self._get_predicted_ret(s)) / total_conf
+            weights[s.symbol] = conf
+        return weights
+
+    def on_day_end(
+        self,
+        date: str,
+        weights: Dict[str, float],
+        realized_rets: Dict[str, float],
+        cache: Dict[str, Any],
+    ) -> None:
+        portfolio = cache.get("_portfolio", {})
+        ep_cache = cache.setdefault("_cstop_ep", {})
+        held_cache = cache.setdefault("_cstop_held", set())
+        days_cache = cache.setdefault("_cstop_days", {})
+        for sym in list(held_cache):
+            pos = portfolio.get(sym)
+            if pos is not None:
+                ep_cache[sym] = pos.get("entry_price", ep_cache.get(sym, 0.0))
+                days_cache[sym] = pos.get("holding_days", days_cache.get(sym, 0))
+            else:
+                held_cache.discard(sym)
+                ep_cache.pop(sym, None)
+                days_cache.pop(sym, None)
 
 
 # ----------------------------------------------------------------------

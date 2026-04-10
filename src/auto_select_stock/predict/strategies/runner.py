@@ -379,7 +379,31 @@ def run_all_strategies_shared(
 
             # 策略 on_day_end hook
             realized_map = {s.symbol: s.realized_ret for s in signals}
-            strat.on_day_end(dt.strftime("%Y-%m-%d"), new_weights, realized_map, cache)
+
+            # Update portfolio snapshot in cache for ExtendedBaseStrategy access
+            dt_str = dt.strftime("%Y-%m-%d")
+            cache["_portfolio"] = {}
+            for sym, pos in positions.items():
+                entry_date_str = entry_dates.get(sym, "")
+                holding_days = 0
+                if entry_date_str:
+                    try:
+                        ed = pd.Timestamp(entry_date_str)
+                        holding_days = (dt - ed).days
+                    except Exception:
+                        holding_days = 0
+                unrealized = 0.0
+                if sym in next_close_map and pos["entry_price"] > 0:
+                    unrealized = (next_close_map[sym] - pos["entry_price"]) / pos["entry_price"]
+                cache["_portfolio"][sym] = {
+                    "entry_price": pos["entry_price"],
+                    "shares": pos["shares"],
+                    "holding_days": holding_days,
+                    "entry_date": entry_date_str,
+                    "unrealized_pnl_pct": unrealized,
+                }
+
+            strat.on_day_end(dt_str, new_weights, realized_map, cache)
 
             prev_weights_list[strat_idx] = new_weights
 

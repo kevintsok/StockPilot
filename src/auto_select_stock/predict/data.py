@@ -812,13 +812,25 @@ def prepare_date_window_datasets(
 
     def _load_dates(sym: str) -> Optional[np.ndarray]:
         try:
-            arr = load_stock_history(sym, base_dir=base_dir)
+            arr = load_stock_history(sym, base_dir=base_dir, table=price_table)
         except FileNotFoundError:
             return None
         df = pd.DataFrame(arr)
         df["date"] = pd.to_datetime(df["date"]).dt.floor("D").astype("datetime64[ns]")
         df.sort_values("date", inplace=True)
         return df["date"].to_numpy()
+
+    # Exclusion stats
+    stat_no_data: int = 0
+    stat_too_short: int = 0
+    stat_mismatch: int = 0
+    stat_no_train: int = 0
+    stat_symbols_by_reason: Dict[str, List[str]] = {
+        "no_data": [],
+        "too_short": [],
+        "mismatch": [],
+        "no_train_window": [],
+    }
 
     window_states = [
         {"train_end": tr, "val_end": val, "splits": [], "mean": None, "m2": None, "count": 0}
@@ -828,15 +840,24 @@ def prepare_date_window_datasets(
     for sym in symbols_list:
         feats = _load_features(sym)
         dates = _load_dates(sym)
-        if feats is None or dates is None or len(feats) <= seq_len:
+        if feats is None or dates is None:
+            stat_no_data += 1
+            stat_symbols_by_reason["no_data"].append(sym)
+            continue
+        if len(feats) <= seq_len:
+            stat_too_short += 1
+            stat_symbols_by_reason["too_short"].append(sym)
             continue
         if len(dates) != len(feats):
-            print(f"[Dataset] skip {sym}: feature/date length mismatch ({len(feats)} vs {len(dates)})")
+            stat_mismatch += 1
+            stat_symbols_by_reason["mismatch"].append(sym)
             continue
+        any_split: bool = False
         for state in window_states:
             split = _date_split_for_symbol(dates, state["train_end"], state["val_end"], seq_len, stride)
             if split is None or split.train_count <= 0:
                 continue
+            any_split = True
             state["splits"].append(
                 _SymbolSplit(
                     symbol=sym,
@@ -867,6 +888,23 @@ def prepare_date_window_datasets(
             state["mean"] = state["mean"] + delta * (batch_count / new_count)
             state["m2"] = state["m2"] + batch_var * batch_count + delta * delta * (state["count"] * batch_count / new_count)
             state["count"] = new_count
+        if not any_split:
+            stat_no_train += 1
+            stat_symbols_by_reason["no_train_window"].append(sym)
+
+    # Print exclusion statistics
+    total = len(symbols_list)
+    included = total - stat_no_data - stat_too_short - stat_mismatch - stat_no_train
+    print(f"\n[Dataset Stats] total={total} included={included} ({100*included/total:.1f}%)")
+    print(f"  excluded={total-included} ({100*(total-included)/total:.1f}%):")
+    print(f"    no_data (FileNotFoundError):   {stat_no_data} ({100*stat_no_data/total:.1f}%)")
+    print(f"    too_short (len<={seq_len}):    {stat_too_short} ({100*stat_too_short/total:.1f}%)")
+    print(f"    mismatch (feat/date len!=):    {stat_mismatch} ({100*stat_mismatch/total:.1f}%)")
+    print(f"    no_train_window (train_count=0): {stat_no_train} ({100*stat_no_train/total:.1f}%)")
+    if stat_mismatch > 0 and stat_mismatch <= 10:
+        print(f"  mismatch symbols: {stat_symbols_by_reason['mismatch']}")
+    elif stat_mismatch > 10:
+        print(f"  mismatch symbols (first 10): {stat_symbols_by_reason['mismatch'][:10]} ...")
 
     windows: List[DatasetWindow] = []
     for idx, state in enumerate(window_states, 1):

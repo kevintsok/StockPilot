@@ -98,6 +98,10 @@ def make_strategy(cfg: Dict[str, Any]) -> "BaseStrategy":
     are registered automatically by the ``_AutoDiscoveryMeta`` metaclass,
     keyed by their lowercase class name with 'Strategy' removed
     (e.g. ``TopKStrategy`` -> ``"topk"``).
+
+    Custom strategies with ``custom_*`` type prefix are loaded from
+    ``custom_strategies`` module (e.g. ``custom_adaptive_k`` ->
+    ``AdaptiveKStrategy``).
     """
     # Trigger import of all strategy subclasses so the registry is populated.
     # Importing the package runs the module-level subclass registration.
@@ -109,17 +113,44 @@ def make_strategy(cfg: Dict[str, Any]) -> "BaseStrategy":
         RiskParityStrategy,
         MeanReversionStrategy,
         ConfidenceStrategy,
+        ConfidenceStopStrategy,
         SectorNeutralStrategy,
         TrailingStopStrategy,
         DualThreshStrategy,
     )
 
-    strategy_cls = _STRATEGY_TYPE_REGISTRY.get(cfg["type"])
+    strategy_type = cfg["type"]
+    strategy_cls = _STRATEGY_TYPE_REGISTRY.get(strategy_type)
+
+    # Handle custom_* strategies: load from custom_strategies module
+    if strategy_cls is None and strategy_type.startswith("custom_"):
+        from . import custom_strategies as cs
+        # Derive class name: custom_adaptive_k -> AdaptiveKStrategy
+        suffix = strategy_type[len("custom_"):]  # e.g. "adaptive_k"
+        parts = suffix.split("_")
+        # Handle known acronyms: rsi -> RSI
+        acronym_map = {"rsi": "RSI", "atr": "ATR", "bb": "BB", "ma": "MA"}
+        class_parts = []
+        for part in parts:
+            if part.lower() in acronym_map:
+                class_parts.append(acronym_map[part.lower()])
+            else:
+                class_parts.append(part.capitalize())
+        class_name = "".join(class_parts) + "Strategy"
+        strategy_cls = getattr(cs, class_name, None)
+        if strategy_cls is None:
+            known = sorted(_STRATEGY_TYPE_REGISTRY.keys())
+            raise ValueError(
+                f"Custom strategy class {class_name!r} not found in custom_strategies. "
+                f"Known custom types need corresponding {class_name} class."
+            )
+        # Register it so future lookups work
+        _STRATEGY_TYPE_REGISTRY[strategy_type] = strategy_cls
+
     if strategy_cls is None:
-        # Provide a helpful error listing known types
         known = sorted(_STRATEGY_TYPE_REGISTRY.keys())
         raise ValueError(
-            f"Unknown strategy type: {cfg['type']!r}. "
+            f"Unknown strategy type: {strategy_type!r}. "
             f"Known types: {known}"
         )
 

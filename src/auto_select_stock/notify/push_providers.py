@@ -94,16 +94,21 @@ class PushPlusProvider(BaseProvider):
         self.token = token
 
     def send(self, title: str, content: str) -> None:
-        params = {
+        import json
+        payload = {
             "token": self.token,
             "title": title,
             "content": content,
             "type": "html",
         }
-        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+        data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "StockPilot/1.0"},
+            self.BASE_URL,
+            data=data,
+            headers={
+                "User-Agent": "StockPilot/1.0",
+                "Content-Type": "application/json",
+            },
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")

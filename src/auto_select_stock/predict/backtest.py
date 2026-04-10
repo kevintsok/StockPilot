@@ -132,6 +132,118 @@ def _progress_items(items: Iterable[str], desc: str):
     yield from _progress(items, desc, unit="stock")
 
 
+def _compute_signal_context(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                             volumes: np.ndarray) -> Dict[str, np.ndarray]:
+    """Pre-compute rolling technical indicators for context.
+
+    Returns a dict of same-length arrays (aligned with closes/highs/lows/volumes).
+    NaN is used for the warm-up period where insufficient history exists.
+    All indicators use only past data (no lookahead).
+    """
+    n = len(closes)
+    ctx: Dict[str, np.ndarray] = {}
+
+    # ── Simple rolling helpers ─────────────────────────────────────────
+    def _sma(arr: np.ndarray, span: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        for i in range(span - 1, n):
+            out[i] = np.mean(arr[i - span + 1:i + 1])
+        return out
+
+    def _running_std(arr: np.ndarray, span: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        for i in range(span - 1, n):
+            out[i] = np.std(arr[i - span + 1:i + 1], ddof=0)
+        return out
+
+    def _rolling_min(arr: np.ndarray, span: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        for i in range(span - 1, n):
+            out[i] = np.min(arr[i - span + 1:i + 1])
+        return out
+
+    def _rolling_max(arr: np.ndarray, span: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        for i in range(span - 1, n):
+            out[i] = np.max(arr[i - span + 1:i + 1])
+        return out
+
+    def _ema(arr: np.ndarray, span: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        if n < span:
+            return out
+        out[span - 1] = np.mean(arr[:span])
+        alpha = 2.0 / (span + 1)
+        for i in range(span, n):
+            out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
+        return out
+
+    # ── Returns ───────────────────────────────────────────────────────
+    for d in [1, 3, 5, 10]:
+        ret = np.full(n, np.nan)
+        ret[d:] = closes[d:] / np.clip(closes[:-d], 1e-6, None) - 1.0
+        ctx[f"ret_{d}d"] = ret
+
+    # ── Volatility ─────────────────────────────────────────────────────
+    for span in [5, 20]:
+        returns = np.diff(closes, prepend=closes[0])
+        ret_arr = np.full(n, 0.0)
+        ret_arr[1:] = returns[1:] / np.clip(closes[:-1], 1e-6, None)
+        vol = _running_std(ret_arr, span)
+        ctx[f"vol_{span}d"] = vol
+
+    # ── RSI-14 ────────────────────────────────────────────────────────
+    delta = np.diff(closes, prepend=closes[0])
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    rsi = np.full(n, 50.0)
+    if n >= 14:
+        avg_gain = np.zeros(n)
+        avg_loss = np.zeros(n)
+        avg_gain[13] = np.mean(gain[1:15])
+        avg_loss[13] = np.mean(loss[1:15])
+        for i in range(14, n):
+            avg_gain[i] = (avg_gain[i - 1] * 13 + gain[i]) / 14
+            avg_loss[i] = (avg_loss[i - 1] * 13 + loss[i]) / 14
+        rs = np.zeros(n)
+        valid = avg_loss > 0
+        rs[valid] = avg_gain[valid] / avg_loss[valid]
+        rsi[valid] = 100 - (100 / (1 + rs[valid]))
+    ctx["rsi_14"] = rsi
+
+    # ── Bollinger Band position ────────────────────────────────────────
+    ma20 = _sma(closes, 20)
+    std20 = _running_std(closes, 20)
+    bb_upper = ma20 + 2 * std20
+    bb_lower = ma20 - 2 * std20
+    bb_pos = np.full(n, 0.5)
+    valid = bb_upper != bb_lower
+    bb_pos[valid] = (closes[valid] - bb_lower[valid]) / (bb_upper[valid] - bb_lower[valid])
+    ctx["bb_position"] = bb_pos
+
+    # ── Volume ratio ───────────────────────────────────────────────────
+    vol_ma5 = _sma(volumes, 5)
+    ctx["volume_ratio"] = np.where(vol_ma5 > 0, volumes / vol_ma5, 1.0)
+
+    # ── Price vs Moving Averages ──────────────────────────────────────
+    ma5 = _sma(closes, 5)
+    ma20_ctx = _sma(closes, 20)
+    ctx["price_vs_ma5"] = np.where(ma5 > 0, closes / ma5, 1.0)
+    ctx["price_vs_ma20"] = np.where(ma20_ctx > 0, closes / ma20_ctx, 1.0)
+
+    # ── ATR-14 (normalized by close) ──────────────────────────────────
+    tr = np.zeros(n)
+    tr[0] = highs[0] - lows[0]
+    for i in range(1, n):
+        tr[i] = max(highs[i] - lows[i],
+                     abs(highs[i] - closes[i - 1]),
+                     abs(lows[i] - closes[i - 1]))
+    atr = _ema(tr, 14)
+    ctx["atr_14"] = np.where(closes > 0, atr / closes, 0.0)
+
+    return ctx
+
+
 def _build_feature_frame(
     symbol: str,
     price_columns: List[str],
@@ -152,7 +264,7 @@ def _build_feature_frame(
     features = np.concatenate([price_features, fin_features, tech_features], axis=1)
     opens = price_df["open"].to_numpy(dtype="float32")
     closes = price_df["close"].to_numpy(dtype="float32")
-    return price_df[["date"]], features, closes, opens
+    return price_df, features, closes, opens
 
 
 def _collect_signals_for_symbol(
@@ -315,6 +427,9 @@ def _collect_signals_batched(
                     p = all_preds[h_j, batch_i]
                     pc = p * scaler_std[close_idx] + scaler_mean[close_idx]
                     predicted_rets[f"{h}d"] = float(pc / entry_c - 1.0)
+            # Build context from pre-computed technical indicators
+            ctx_all = info["ctx_all"]
+            ctx = {k: float(v[idx]) if not np.isnan(v[idx]) else 0.0 for k, v in ctx_all.items()}
             # realized_ret: entry at T's close, exit at T+1's close (proper 1-day return)
             # Filter out stock splits: when close-to-close return exceeds ±15%, it's almost
             # certainly a bonus-share event or data error, not a real return.
@@ -337,6 +452,7 @@ def _collect_signals_batched(
                         next_open=next_o,
                         next_close=next_c,
                         split_move=raw_realized,
+                        context=ctx,
                     )
                 )
                 remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
@@ -353,6 +469,7 @@ def _collect_signals_batched(
                     auc_limit=auc_limit,
                     next_open=next_o,      # T+1's open: buy price for new position
                     next_close=next_c,     # T+1's close: sell price for new position
+                    context=ctx,
                 )
             )
             remaining_windows[sym] = remaining_windows.get(sym, 0) - 1
@@ -368,6 +485,9 @@ def _collect_signals_batched(
             table=getattr(predictor.cfg, "price_table", "price_hfq"),
         )
         dates = dates_df["date"].to_numpy()
+        highs = dates_df["high"].to_numpy(dtype="float32")
+        lows = dates_df["low"].to_numpy(dtype="float32")
+        volumes = dates_df["volume"].to_numpy(dtype="float32")
         seq_len = predictor.cfg.seq_len
         if len(features) < seq_len + 1:
             continue
@@ -377,6 +497,9 @@ def _collect_signals_batched(
         else:
             scaler_mean = predictor.scaler["mean"]
             scaler_std = predictor.scaler["std"]
+
+        # Pre-compute rolling technical indicators for context (no lookahead)
+        ctx_all = _compute_signal_context(closes, highs, lows, volumes)
 
         normed = (features - scaler_mean) / scaler_std
         num_windows = len(normed) - seq_len
@@ -408,6 +531,7 @@ def _collect_signals_batched(
             "next_dates": next_dates,
             "scaler_mean": scaler_mean,
             "scaler_std": scaler_std,
+            "ctx_all": ctx_all,
         }
         valid_windows = 0
         remaining_windows[sym] = remaining_windows.get(sym, 0)

@@ -1,0 +1,114 @@
+[
+  {
+    "name": "Conf-1d-K10-SL3pct",
+    "description": "置信度加权 1d K=10 止损3%",
+    "type": "confidence",
+    "horizon": "1d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.03, "take_profit_pct": 0.0},
+    "tag": "c1k10sl3"
+  },
+  {
+    "name": "Conf-1d-K15-SL3pct",
+    "description": "置信度加权 1d K=15 止损3%",
+    "type": "confidence",
+    "horizon": "1d",
+    "params": {"top_k": 15, "min_confidence": 0.005, "stop_loss_pct": 0.03, "take_profit_pct": 0.0},
+    "tag": "c1k15sl3"
+  },
+  {
+    "name": "Conf-1d-K10-SL5pct-TP10pct",
+    "description": "置信度加权 1d K=10 止损5%止盈10%",
+    "type": "confidence",
+    "horizon": "1d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.10},
+    "tag": "c1k10sl5tp10"
+  },
+  {
+    "name": "Conf-1d-K20-SL5pct",
+    "description": "置信度加权 1d K=20 止损5% 分散持仓",
+    "type": "confidence",
+    "horizon": "1d",
+    "params": {"top_k": 20, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.0},
+    "tag": "c1k20sl5"
+  },
+  {
+    "name": "Conf-5d-K10-SL5pct-TP15pct",
+    "description": "置信度加权 5d K=10 止损5%止盈15%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.15},
+    "tag": "c5k10sl5tp15"
+  },
+  {
+    "name": "Conf-5d-K15-SL5pct-TP15pct",
+    "description": "置信度加权 5d K=15 止损5%止盈15%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 15, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.15},
+    "tag": "c5k15sl5tp15"
+  },
+  {
+    "name": "Conf-5d-K10-SL3pct",
+    "description": "置信度加权 5d K=10 止损3%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.03, "take_profit_pct": 0.0},
+    "tag": "c5k10sl3"
+  },
+  {
+    "name": "Conf-5d-K10-SL5pct",
+    "description": "置信度加权 5d K=10 止损5%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.0},
+    "tag": "c5k10sl5"
+  },
+  {
+    "name": "Conf-5d-K15-SL5pct",
+    "description": "置信度加权 5d K=15 止损5%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 15, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.0},
+    "tag": "c5k15sl5"
+  },
+  {
+    "name": "Conf-5d-K20-SL5pct",
+    "description": "置信度加权 5d K=20 止损5%",
+    "type": "confidence",
+    "horizon": "5d",
+    "params": {"top_k": 20, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.0},
+    "tag": "c5k20sl5"
+  },
+  {
+    "name": "ConfStop-1d-K10-SL3-TP8-Hold10",
+    "description": "置信度+止损止盈+最大持仓10天 1d K=10",
+    "type": "confidence_stop",
+    "horizon": "1d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.03, "take_profit_pct": 0.08, "max_holding_days": 10},
+    "tag": "cs1k10sl3tp8h10"
+  },
+  {
+    "name": "ConfStop-1d-K15-SL5-TP10-Hold10",
+    "description": "置信度+止损止盈+最大持仓10天 1d K=15",
+    "type": "confidence_stop",
+    "horizon": "1d",
+    "params": {"top_k": 15, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.10, "max_holding_days": 10},
+    "tag": "cs1k15sl5tp10h10"
+  },
+  {
+    "name": "ConfStop-5d-K10-SL5-TP15-Hold10",
+    "description": "置信度+止损止盈+最大持仓10天 5d K=10",
+    "type": "confidence_stop",
+    "horizon": "5d",
+    "params": {"top_k": 10, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.15, "max_holding_days": 10},
+    "tag": "cs5k10sl5tp15h10"
+  },
+  {
+    "name": "ConfStop-5d-K15-SL5-TP15-Hold10",
+    "description": "置信度+止损止盈+最大持仓10天 5d K=15",
+    "type": "confidence_stop",
+    "horizon": "5d",
+    "params": {"top_k": 15, "min_confidence": 0.005, "stop_loss_pct": 0.05, "take_profit_pct": 0.15, "max_holding_days": 10},
+    "tag": "cs5k15sl5tp15h10"
+  }
+]

@@ -66,10 +66,12 @@ class Signal:
     next_open: float = 0.0     # T+1's open price (buy execution price)
     next_close: float = 0.0    # T+1's close price (sell execution price)
     split_move: float = 0.0    # raw close-to-close move that was filtered (e.g. 0.20 = +20% split); 0 if normal
+    context: Optional[Dict[str, float]] = None  # pre-computed technical indicators (RSI, vol, etc.)
 
     # Tuple index map for backward-compatible __getitem__
     _FIELDS = ("symbol", "predicted_ret", "realized_ret", "industry",
-               "predicted_rets", "entry_price", "auc_limit", "next_open", "next_close", "split_move")
+               "predicted_rets", "entry_price", "auc_limit", "next_open", "next_close",
+               "split_move", "context")
 
     def __getitem__(self, index: int):
         """Allow tuple-style indexing (e.g. sig[1]) while preserving attribute access."""
@@ -103,6 +105,29 @@ _PARAMS_SCHEMA_PROPERTIES = {
     "min_confidence": {"type": "number", "minimum": 0.0},
     "allow_short": {"type": "boolean"},
     "horizon": {"type": "string"},
+    # Custom strategy params
+    "low_vol_k": {"type": "integer", "minimum": 1},
+    "high_vol_k": {"type": "integer", "minimum": 1},
+    "vol_thresh": {"type": "number", "minimum": 0.0},
+    "rsi_lower": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+    "rsi_upper": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+    "min_pred_ret": {"type": "number", "minimum": 0.0},
+    "bb_entry": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "bb_exit": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "atr_multiplier": {"type": "number", "minimum": 0.0},
+    "regime_lookback": {"type": "integer", "minimum": 1},
+    "consensus_threshold": {"type": "number", "minimum": 0.0},
+    "reduce_thresh": {"type": "number", "minimum": 0.0},
+    "profit_take": {"type": "number", "minimum": 0.0},
+    "reduce_pct": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "vol_ratio_thresh": {"type": "number", "minimum": 0.0},
+    "trailing_stop_pct": {"type": "number", "minimum": 0.0},
+    "ma_filter": {"type": "number", "minimum": 0.0},
+    "min_divergence": {"type": "number", "minimum": 0.0},
+    # Stop-loss / take-profit params
+    "stop_loss_pct": {"type": "number", "minimum": 0.0},
+    "take_profit_pct": {"type": "number", "minimum": 0.0},
+    "max_holding_days": {"type": "integer", "minimum": 1},
 }
 
 

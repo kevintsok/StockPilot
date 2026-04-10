@@ -1,0 +1,82 @@
+[
+  {
+    "name": "AdaptiveK-VolRegime-5d",
+    "description": "波动率自适应K：高波→K=2，低波→K=5",
+    "type": "custom_adaptive_k",
+    "horizon": "5d",
+    "params": {"low_vol_k": 5, "high_vol_k": 2, "vol_thresh": 0.02},
+    "tag": "adk01"
+  },
+  {
+    "name": "RSIReversal-5d",
+    "description": "RSI<35超卖买入，RSI>65超买卖出，配合5d预测过滤",
+    "type": "custom_rsi_reversal",
+    "horizon": "5d",
+    "params": {"top_k": 3, "rsi_lower": 35.0, "rsi_upper": 65.0, "min_pred_ret": 0.005},
+    "tag": "rsr02"
+  },
+  {
+    "name": "BBBreakout-5d",
+    "description": "布林上穿买入(>0.8)，下穿卖出(<0.2)，5d预测确认方向",
+    "type": "custom_bollinger_breakout",
+    "horizon": "5d",
+    "params": {"top_k": 3, "bb_entry": 0.8, "bb_exit": 0.2},
+    "tag": "bbb03"
+  },
+  {
+    "name": "VolAdpStop-ATR2x-5d",
+    "description": "动态止损：2×ATR，高波动扩大止损幅度",
+    "type": "custom_volatility_adaptive_stop",
+    "horizon": "5d",
+    "params": {"top_k": 3, "atr_multiplier": 2.0, "stop_pct": 0.03},
+    "tag": "vas04"
+  },
+  {
+    "name": "MomentumRegime-5d",
+    "description": "动量强时追涨(K=5)，动量弱时反转(K=2)",
+    "type": "custom_momentum_regime",
+    "horizon": "5d",
+    "params": {"k": 3, "regime_lookback": 5},
+    "tag": "mrg05"
+  },
+  {
+    "name": "MultiHorizonEnsemble-5d",
+    "description": "1d+5d+14d预测方向一致时权重×1.5",
+    "type": "custom_multi_horizon_ensemble",
+    "horizon": "5d",
+    "params": {"top_k": 3, "consensus_threshold": 0.005},
+    "tag": "mhe06"
+  },
+  {
+    "name": "DrawdownCut-5d",
+    "description": "浮亏>8%止损，>5%减半仓，>10%部分止盈",
+    "type": "custom_drawdown_cut",
+    "horizon": "5d",
+    "params": {"top_k": 3, "stop_loss": 0.08, "reduce_thresh": 0.05, "profit_take": 0.10, "reduce_pct": 0.30},
+    "tag": "ddc07"
+  },
+  {
+    "name": "VolConfirmation-5d",
+    "description": "预测上涨+成交量放大(vol_ratio>1.5)才买入",
+    "type": "custom_volume_confirmation",
+    "horizon": "5d",
+    "params": {"top_k": 3, "vol_ratio_thresh": 1.5, "min_pred_ret": 0.005},
+    "tag": "vcf08"
+  },
+  {
+    "name": "TrendFollow-6pctTrail-5d",
+    "description": "追踪止盈：最高价回落>6%止盈，MA20趋势确认入场",
+    "type": "custom_trend_following_stop",
+    "horizon": "5d",
+    "params": {"top_k": 3, "trailing_stop_pct": 0.06, "ma_filter": 1.0},
+    "tag": "tft09"
+  },
+  {
+    "name": "RSIDivergence-5d",
+    "description": "价格创新低但RSI未创新低→底背离买入",
+    "type": "custom_rsi_divergence",
+    "horizon": "5d",
+    "params": {"top_k": 3, "min_divergence": 10.0},
+    "tag": "rbd10"
+  }
+]
