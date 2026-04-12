@@ -1,1 +1,12 @@
-["Conf-MC5bp-5d", "StopLoss-3pct-5d", "StopLoss-3pct-5d+ML5", "Momentum-LB5-5d", "TopK-K5-5d+ML5", "StopLoss-2pct-5d", "TopK-K5-5d+SL2", "StopLoss-2pct-5d+ML5", "TopK-K3-5d+SL2", "TopK-K10-5d"]
+[
+  "Conf-5d-K15-SL5pct-TP15pct",
+  "Conf-5d-K15-SL5pct",
+  "ConfStop-5d-K15-SL5-TP15-Hold10",
+  "Conf-5d-K10-SL5pct-TP15pct",
+  "Conf-5d-K10-SL3pct",
+  "Conf-5d-K10-SL5pct",
+  "ConfStop-5d-K10-SL5-TP15-Hold10",
+  "Conf-5d-K10-SL2pct-TP15pct",
+  "Conf-5d-K10-SL3pct-TP15pct",
+  "Conf-5d-K10-SL8pct-TP15pct"
+]

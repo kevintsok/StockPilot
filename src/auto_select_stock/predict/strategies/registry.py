@@ -88,7 +88,10 @@ class StrategyRegistry:
 
     def _load_one(self, path: Path) -> Dict[str, Any]:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            content = f.read()
+        # Strip comment lines (lines starting with #) before parsing
+        lines = [line for line in content.splitlines() if not line.strip().startswith("#")]
+        return json.loads("\n".join(lines))
 
 
 def make_strategy(cfg: Dict[str, Any]) -> "BaseStrategy":
