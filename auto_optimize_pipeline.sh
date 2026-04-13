@@ -42,7 +42,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
 )"
     echo "[Step6] Pushing..."
-    git push
+    git push || echo "WARNING: git push failed, skipping (network issue)"
 fi
 
 echo "========================================="
