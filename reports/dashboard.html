@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>A股价格与财报看板</title>
+  <style>
+    body { font-family: "Arial", sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:24px; }
+    h1 { margin:0 0 12px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; box-shadow:0 10px 40px rgba(0,0,0,0.45); }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th, td { padding:10px; border-bottom:1px solid #1f2937; text-align:right; }
+    th { cursor:pointer; color:#93c5fd; position:sticky; top:0; background:#0b1221; }
+    th:first-child, td:first-child { text-align:left; }
+    tr:hover { background:rgba(59,130,246,0.08); }
+    .meta { color:#94a3b8; font-size:13px; }
+    .badge { padding:4px 8px; border-radius:8px; background:#1d4ed8; color:#e0f2fe; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>A股价格与财报看板 <span class="meta">点击表头排序</span></h1>
+  <div class="card">
+    <table id="stock-table">
+      <thead>
+        <tr id="header-row"></tr>
+      </thead>
+      <tbody id="body-rows"></tbody>
+    </table>
+  </div>
+  <script>
+    const columns = [
+      {key:"symbol", label:"代码"},
+      {key:"last_date", label:"最新日期"},
+      {key:"price", label:"收盘价"},
+      {key:"turnover_rate", label:"换手率%"},
+      {key:"pct_change", label:"当日涨跌幅%"},
+      {key:"chg_20d", label:"20日涨跌幅%"},
+      {key:"chg_60d", label:"60日涨跌幅%"},
+      {key:"pe", label:"市盈率(估)"},
+      {key:"roe", label:"ROE%"},
+      {key:"net_profit_margin", label:"净利率%"},
+      {key:"gross_margin", label:"毛利率%"},
+      {key:"ocf_growth", label:"经营现金流增速%"},
+      {key:"debt_to_asset", label:"资产负债率%"},
+    ];
+    let data = [{"symbol": "000001", "last_date": "2025-11-21", "price": 11.69, "turnover_rate": 0.007551216301946642, "pct_change": -1.3502109704641385, "chg_20d": 1.475694444444442, "chg_60d": -3.067993366500832, "pe": 6.251336898395722, "roe": 8.28, "net_profit_margin": 38.084594, "gross_margin": 71.60766, "ocf_growth": -58.90647298510616, "debt_to_asset": 91.018706}, {"symbol": "000002", "last_date": "2025-11-21", "price": 6.06, "turnover_rate": 0.01266949649050916, "pct_change": -2.2580645161290436, "chg_20d": -4.113924050632923, "chg_60d": -7.621951219512191, "pe": -2.5701925523793365, "roe": -14.81, "net_profit_margin": -17.496087, "gross_margin": 9.584409, "ocf_growth": 93.81105317712095, "debt_to_asset": 73.514735}, {"symbol": "000004", "last_date": "2025-11-21", "price": 10.54, "turnover_rate": 0.04267000743888355, "pct_change": -4.9594229035166855, "chg_20d": -21.107784431137734, "chg_60d": 3.4347399411187363, "pe": -51.51515151515151, "roe": -53.65, "net_profit_margin": -67.24708, "gross_margin": 69.542843, "ocf_growth": -57.959685149931815, "debt_to_asset": 83.018688}, {"symbol": "000006", "last_date": "2025-11-21", "price": 10.5, "turnover_rate": 0.027844667373472277, "pct_change": -4.284412032816776, "chg_20d": -21.052631578947366, "chg_60d": 43.83561643835616, "pe": -2019.2307692307693, "roe": -0.13, "net_profit_margin": 0.388975, "gross_margin": 18.535167, "ocf_growth": -31.08242561943584, "debt_to_asset": 64.217967}, {"symbol": "000007", "last_date": "2025-11-21", "price": 9.5, "turnover_rate": 0.050829136734857706, "pct_change": -5.000000000000004, "chg_20d": 29.958960328317374, "chg_60d": 22.107969151670947, "pe": 959.5959595959595, "roe": 1.89, "net_profit_margin": 0.821769, "gross_margin": 11.317231, "ocf_growth": 62.51208074601953, "debt_to_asset": 46.81344}, {"symbol": "000008", "last_date": "2025-11-21", "price": 3.02, "turnover_rate": 0.042064490009411905, "pct_change": -3.821656050955413, "chg_20d": 3.7800687285223233, "chg_60d": 1.342281879194629, "pe": -94.08099688473521, "roe": -2.93, "net_profit_margin": -7.805508, "gross_margin": 27.166462, "ocf_growth": -37.44253721901227, "debt_to_asset": 66.856885}, {"symbol": "000009", "last_date": "2025-11-21", "price": 10.02, "turnover_rate": 0.026465836326343004, "pct_change": -8.32570905763953, "chg_20d": -7.988980716253458, "chg_60d": 5.252100840336138, "pe": 91.2568306010929, "roe": 2.82, "net_profit_margin": 7.84487, "gross_margin": 26.571325, "ocf_growth": 1255.06718924972, "debt_to_asset": 59.587413}, {"symbol": "000010", "last_date": "2025-11-21", "price": 3.62, "turnover_rate": 0.04521772249430868, "pct_change": -7.653061224489788, "chg_20d": -5.974025974025976, "chg_60d": -22.649572649572647, "pe": -130.21582733812951, "roe": -9.94, "net_profit_margin": -7.186268, "gross_margin": 7.945829, "ocf_growth": -42.30397525932608, "debt_to_asset": 86.348041}, {"symbol": "000011", "last_date": "2025-11-21", "price": 9.5, "turnover_rate": 0.02083907817917384, "pct_change": -4.618473895582342, "chg_20d": -5.472636815920406, "chg_60d": 0.9564293304994642, "pe": 175.6007393715342, "roe": 0.95, "net_profit_margin": 1.51881, "gross_margin": 25.035219, "ocf_growth": 2115.9042763176185, "debt_to_asset": 78.724145}, {"symbol": "000012", "last_date": "2025-11-21", "price": 4.66, "turnover_rate": 0.010763973020760374, "pct_change": -2.9166666666666563, "chg_20d": 0.4310344827586299, "chg_60d": -4.312114989733063, "pe": 93.2, "roe": 1.12, "net_profit_margin": 1.335023, "gross_margin": 13.877686, "ocf_growth": 116.39620367340092, "debt_to_asset": 56.171298}, {"symbol": "000014", "last_date": "2025-11-21", "price": 15.36, "turnover_rate": 0.06185996522713777, "pct_change": -4.536979490366688, "chg_20d": -29.670329670329675, "chg_60d": 3.8539553752535483, "pe": -115.40195341848235, "roe": -2.0, "net_profit_margin": -155.715326, "gross_margin": 21.478224, "ocf_growth": 1.4693950755408247, "debt_to_asset": 29.13824}, {"symbol": "000016", "last_date": "2025-11-21", "price": 5.03, "turnover_rate": 0.02208747021315002, "pct_change": -3.0828516377649384, "chg_20d": -15.033783783783782, "chg_60d": -9.532374100719409, "pe": -12.340529931305202, "roe": -53.45, "net_profit_margin": -15.327515, "gross_margin": 4.607837, "ocf_growth": 60.78943616793786, "debt_to_asset": 96.783322}, {"symbol": "000017", "last_date": "2025-11-21", "price": 9.23, "turnover_rate": 0.023035994412174816, "pct_change": 10.011918951132293, "chg_20d": 36.74074074074074, "chg_60d": 35.735294117647065, "pe": 205.56792873051225, "roe": 8.62, "net_profit_margin": 5.426878, "gross_margin": 9.685221, "ocf_growth": 42.8778549437961, "debt_to_asset": 17.676723}, {"symbol": "000019", "last_date": "2025-11-21", "price": 7.46, "turnover_rate": 0.14212322245143977, "pct_change": 0.9472259810554773, "chg_20d": 5.81560283687943, "chg_60d": 7.030129124820661, "pe": 35.30525319451018, "roe": 4.89, "net_profit_margin": 6.212455, "gross_margin": 16.913193, "ocf_growth": 71.59829357778086, "debt_to_asset": 28.824596}, {"symbol": "000020", "last_date": "2025-11-21", "price": 15.96, "turnover_rate": 0.0887216422037253, "pct_change": 1.0126582278481067, "chg_20d": 10.91035441278665, "chg_60d": 11.142061281337057, "pe": 212.51664447403462, "roe": 5.13, "net_profit_margin": 3.113979, "gross_margin": 12.257395, "ocf_growth": -26.055677930355724, "debt_to_asset": 43.586265}, {"symbol": "000021", "last_date": "2025-11-21", "price": 22.52, "turnover_rate": 0.03742856455893778, "pct_change": -4.5762711864406835, "chg_20d": -25.182724252491695, "chg_60d": 5.037313432835822, "pe": 46.59631698737844, "roe": 6.16, "net_profit_margin": 8.765366, "gross_margin": 16.911715, "ocf_growth": 39.24025703582294, "debt_to_asset": 42.489079}, {"symbol": "000025", "last_date": "2025-11-21", "price": 19.39, "turnover_rate": 0.05832776106379802, "pct_change": -1.2226184411614827, "chg_20d": 4.359526372443501, "chg_60d": 8.688340807174889, "pe": 67.63167073596094, "roe": 6.98, "net_profit_margin": 10.163128, "gross_margin": 17.530082, "ocf_growth": 10.47253083841506, "debt_to_asset": 25.565064}, {"symbol": "000026", "last_date": "2025-11-21", "price": 14.96, "turnover_rate": 0.015610517977355918, "pct_change": -1.7728168089297447, "chg_20d": -10.633213859020296, "chg_60d": -20.510095642933045, "pe": 48.524164774570224, "roe": 3.68, "net_profit_margin": 4.67365, "gross_margin": 35.880166, "ocf_growth": 48.68238691825522, "debt_to_asset": 13.777255}, {"symbol": "000027", "last_date": "2025-11-21", "price": 6.55, "turnover_rate": 0.006677837125175425, "pct_change": -3.2496307237813826, "chg_20d": -9.6551724137931, "chg_60d": -5.483405483405479, "pe": 18.424753867791843, "roe": 5.32, "net_profit_margin": 8.734224, "gross_margin": 22.91098, "ocf_growth": 145.0534561002736, "debt_to_asset": 61.852941}, {"symbol": "000028", "last_date": "2025-11-21", "price": 24.84, "turnover_rate": 0.011419549441758126, "pct_change": -2.358490566037741, "chg_20d": -2.6264210113680964, "chg_60d": -4.351174432036964, "pe": 14.44186046511628, "roe": 5.29, "net_profit_margin": 1.849264, "gross_margin": 10.485245, "ocf_growth": -3173.605467306982, "debt_to_asset": 57.384971}];
+    let sortKey = "symbol";
+    let sortAsc = true;
+
+    function format(val) {
+      if (val === null || val === undefined || Number.isNaN(val)) return "";
+      if (typeof val === "number") return val.toFixed(2);
+      return val;
+    }
+
+    function renderHeaders() {
+      const header = document.getElementById("header-row");
+      header.innerHTML = "";
+      columns.forEach(col => {
+        const th = document.createElement("th");
+        th.textContent = col.label;
+        th.onclick = () => sortBy(col.key);
+        header.appendChild(th);
+      });
+    }
+
+    function renderRows() {
+      const body = document.getElementById("body-rows");
+      body.innerHTML = "";
+      data.forEach(row => {
+        const tr = document.createElement("tr");
+        columns.forEach(col => {
+          const td = document.createElement("td");
+          td.textContent = format(row[col.key]);
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+    }
+
+    function sortBy(key) {
+      if (sortKey === key) {
+        sortAsc = !sortAsc;
+      } else {
+        sortKey = key; sortAsc = true;
+      }
+      data.sort((a,b) => {
+        const va = a[sortKey]; const vb = b[sortKey];
+        if (va === undefined || va === null) return 1;
+        if (vb === undefined || vb === null) return -1;
+        if (typeof va === "number" && typeof vb === "number") {
+          return sortAsc ? va - vb : vb - va;
+        }
+        return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      });
+      renderRows();
+    }
+
+    renderHeaders();
+    sortBy("symbol");
+  </script>
+</body>
+</html>

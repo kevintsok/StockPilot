@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>选股结果 - 近60天 | ROE&gt;10.0%</title>
+  <style>
+    :root { --bg:#0e1116; --card:#161b22; --text:#e6edf3; --accent:#58a6ff; --dim:#8b949e; }
+    body { background: var(--bg); color: var(--text); font-family: "Segoe UI", Arial, sans-serif; margin:0; padding:24px; }
+    h1 { margin:0 0 8px; font-size:20px; }
+    p.meta { color: var(--dim); margin:0 0 20px; font-size:13px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th { text-align:left; padding:10px 12px; background:#1c2128; cursor:pointer; user-select:none; white-space:nowrap; }
+    th:hover { background:#2d333b; }
+    th .arrow { color: var(--accent); margin-left:4px; }
+    td { padding:8px 12px; border-bottom:1px solid #21262d; white-space:nowrap; }
+    tr:hover td { background:#161b22; }
+    .num { text-align:right; font-variant-numeric:tabular-nums; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:12px; }
+    .tag-up { background:#1f3830; color:#3fb950; }
+    .tag-down { background:#3d1f1f; color:#f85149; }
+    .tag-none { background:#21262d; color: var(--dim); }
+    th.sorted { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>选股结果</h1>
+  <p class="meta">条件: 近60天 | ROE&gt;10.0% &nbsp;|&nbsp; 符合条件: 0 只</p>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th data-key="symbol" onclick="sort('symbol')">股票代码 <span class="arrow"></span></th>
+        <th data-key="name" onclick="sort('name')">名字 <span class="arrow"></span></th>
+        <th data-key="lookback_pct_change" onclick="sort('lookback_pct_change')" class="sorted">N天内涨幅(%) <span class="arrow">▼</span></th>
+        <th data-key="last_close" onclick="sort('last_close')">最新收盘价 <span class="arrow"></span></th>
+        <th data-key="roe" onclick="sort('roe')">ROE(%) <span class="arrow"></span></th>
+        <th data-key="eps" onclick="sort('eps')">EPS(元) <span class="arrow"></span></th>
+        <th data-key="turnover_rate" onclick="sort('turnover_rate')">换手率(%) <span class="arrow"></span></th>
+        <th data-key="last_date" onclick="sort('last_date')">最新日期 <span class="arrow"></span></th>
+      </tr>
+    </thead>
+    <tbody>
+    
+      <tr><td colspan="8" style="text-align:center;color:var(--dim);padding:32px;">暂无符合条件的数据</td></tr>
+    
+    </tbody>
+  </table>
+  <script>
+    var dir = -1;
+    function sort(key) {
+      dir *= -1;
+      var tbl = document.getElementById('tbl');
+      var rows = Array.from(tbl.tBodies[0].rows);
+      var col = document.querySelector('th[data-key="' + key + '"]');
+      document.querySelectorAll('th').forEach(function(h){ h.classList.remove('sorted'); h.querySelector('.arrow').textContent = ''; });
+      col.classList.add('sorted');
+      col.querySelector('.arrow').textContent = dir > 0 ? '▲' : '▼';
+      rows.sort(function(a, b) {
+        var A = a.children[Array.from(tbl.tHead.rows[0].cells).indexOf(col)].textContent.trim();
+        var B = b.children[Array.from(tbl.tHead.rows[0].cells).indexOf(col)].textContent.trim();
+        var NA = A.replace(/[^\d.\-]/g, '');
+        var NB = B.replace(/[^\d.\-]/g, '');
+        if (NA === '' && NB === '') return A > B ? dir : -dir;
+        if (NA === '') return 1;
+        if (NB === '') return -1;
+        return (parseFloat(NA) - parseFloat(NB)) * dir;
+      });
+      var tbody = tbl.tBodies[0];
+      rows.forEach(function(r){ tbody.appendChild(r); });
+    }
+  </script>
+</body>
+</html>

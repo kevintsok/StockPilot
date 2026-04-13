@@ -85,6 +85,11 @@ def main() -> None:
         default=None,
         help="Path to holdings JSON file (default: data/holdings.json)",
     )
+    parser.add_argument(
+        "--portfolio",
+        action="store_true",
+        help="运行虚拟盘模拟并推送 Top-3 策略",
+    )
     args = parser.parse_args()
 
     horizon = args.horizon or NOTIFY_HORIZON
@@ -120,6 +125,25 @@ def main() -> None:
                 f"  {a.symbol}: 当前价={a.current_price:.2f} 浮盈亏={a.unrealized_pct*100:+.2f}% "
                 f"建议={a.recommendation} 5d预测={a.pred_rets.get('5d', a.pred_rets.get('1d', 0))*100:+.2f}%"
             )
+        return
+
+    if args.portfolio:
+        from .virtual_portfolio import VirtualPortfolio
+        from .portfolio_report import generate_portfolio_report
+
+        state_path = Path("data/virtual_portfolio_state.json")
+        portfolio = VirtualPortfolio.from_json(state_path) if state_path.exists() else VirtualPortfolio()
+        portfolio.update(latest_date, NOTIFY_CHECKPOINT)
+        portfolio.to_json(state_path)
+
+        top3 = portfolio.get_top_n(3)
+        print(f"\n=== Virtual Portfolio ({latest_date}) ===")
+        print(portfolio.summary())
+
+        html = generate_portfolio_report(portfolio, top_n=3, checkpoint=NOTIFY_CHECKPOINT)
+        provider = PushPlusProvider(token=PUSHPLUS_TOKEN)
+        provider.send(title=f"StockPilot 虚拟盘 Top3 {latest_date}", content=html)
+        print(f"OK: pushed top-3 virtual portfolio to PushPlus")
         return
 
     # Default: daily stock recommendations

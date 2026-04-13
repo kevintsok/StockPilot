@@ -15,7 +15,7 @@ import os
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
 
 # Model checkpoint
-DEFAULT_CHECKPOINT = "models/price_transformer-train20220101-val20230101.pt"
+DEFAULT_CHECKPOINT = "models/price_transformer_2025-train20250331-val20260327.pt"
 NOTIFY_CHECKPOINT = os.getenv("NOTIFY_CHECKPOINT", DEFAULT_CHECKPOINT)
 
 # Strategy (top backtest performer: RiskParity-VL10-1d tag=469da)
