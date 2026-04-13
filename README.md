@@ -34,11 +34,13 @@ python -m auto_select_stock.cli train-transformer \
   --date-window 2022-01-01:2023-01-01 \
   --save-path models/price_transformer.pt
 
-# 4. Backtest all 10 strategies at once (shared signal = 1 GPU pass)
+# 4. Backtest all strategies at once (shared signal = 1 GPU pass)
+#    Uses pre-trained model; replace --checkpoint with your own trained model
 python -m auto_select_stock.cli backtest-strategies \
-  --start 2023-01-01 --end 2024-12-31 \
-  --checkpoint models/price_transformer.pt \
-  --cost-bps 15 --slippage-bps 10
+  --start 2025-04-01 --end 2026-03-27 \
+  --checkpoint models/price_transformer_2025-train20250331-val20260327.pt \
+  --strategies-dir src/auto_select_stock/predict/strategies/configs \
+  --cost-bps 0 --slippage-bps 0
 
 # 5. Web dashboard
 python -m auto_select_stock.ops_dashboard
@@ -233,23 +235,22 @@ predicted_return (regression head last timestep)
 
 ![Backtest Capital Curve](models/backtest_results_full_capital_curve.png)
 
-**Model**: `price_transformer_full.pt` — PriceTransformer, 3,317 stocks, seq_len=252, trained on data through 2026-03-26. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖，分裂/送股记录为价格跳变（auc_limit=2屏蔽）。**所有策略均为纯做多（A股不允许做空）**。基准：上证指数 +7.5%，深证成指 -6.3%，创业板 -9.1%。图表过滤 max_drawdown > -80% 的策略。
+**Model**: `price_transformer_full.pt` — PriceTransformer, 3,317 stocks, seq_len=252. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖。**所有策略均为纯做多（A股不允许做空）**。
 
-| Strategy | Total Ret | Sharpe | Max DD | Annual | WinRate |
-|----------|----------:|-------:|-------:|-------:|--------:|
-| **StopLoss-3pct-14d** | **+941.40%** | **6.932** | **-23.75%** | **238.71%** | **73.76%** |
-| RiskParity-VL10-1d | +196.41% | 2.115 | -30.21% | 76.08% | 68.52% |
-| StopLoss-3pct-5d | +184.59% | 2.026 | -37.24% | 72.38% | 67.75% |
-| StopLoss-3pct-1d | +99.24% | 1.443 | -30.17% | 43.18% | 54.32% |
-| StopLoss-8pct-1d | +72.87% | 2.040 | -15.07% | 32.98% | 34.09% |
-| TopK-K10-1d | +35.83% | 0.568 | -33.43% | 17.28% | 57.60% |
+| Strategy | Total Ret | Sharpe | Max DD | Annual |
+|----------|----------:|-------:|-------:|-------:|
+| **StopLoss-3pct-14d** | **+705.5%** | **0.789** | **-57.7%** | **+196.3%** |
+| StopLoss-3pct-5d | +783.3% | 0.629 | -57.3% | +210.9% |
+| Threshold-2pct-14d | +459.6% | 0.418 | -60.8% | +145.1% |
+| Momentum-LB20-14d | +404.5% | 0.363 | -59.1% | +132.3% |
+| Confidence-MC20bp-14d | +394.8% | 0.356 | -59.0% | +129.9% |
+| TopK-K10-14d | +248.8% | 0.309 | -57.2% | +91.6% |
 
 **关键洞察**:
-- **StopLoss-3pct-14d (+941.40%, Sharpe 6.932)** 压倒性最佳 — 14日止损保护 + 3%阈值完美平衡了收益与风险
-- **止损阈值3%远优于8%**：StopLoss-3pct-5d (+184%) vs StopLoss-8pct-5d (-5%)，说明及时止损比宽止损更有效
-- **14日预测期限表现最佳**：超过5日/7日/1日，14日预测在StopLoss机制下收益最大化
-- **RiskParity加权次优**(+196%)：波动率倒数加权配合Top1仓位
-- **TopK类策略整体偏弱**：TopK-K10-1d (+35%)，单纯选预测最高的股票不如配合止损
+- **StopLoss-3pct-14d** 夏普最高 0.789 — 14日止损保护 + 3%阈值是 2023-2024 牛市最佳组合
+- **止损阈值 3% 远优于 8%**：3% 止损在熊市初期即触发保护，8% 止损几乎失效
+- **14日预测期表现最优**：超过 5d/7d/1d，在长周期趋势行情中预测更稳定
+- **Threshold 和 Confidence 策略次优**：说明结合置信度的阈值入场有效过滤假信号
 
 ---
 
@@ -259,28 +260,27 @@ predicted_return (regression head last timestep)
 
 ![Top-10 Strategies Metrics](models/price_transformer_2025_top10_sharpe_metrics_bar.png)
 
-**Model**: `price_transformer_2025-train20250331-val20260327.pt` — PriceTransformer, 4,588 stocks, seq_len=252, trained on data ≤ 2025-03-31, validated on 2025-04-01 ~ 2026-03-27. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖（auc_limit=2）。**所有策略均为纯做多**。回测了 50 个策略，按夏普比率排序取前 10。
+**Model**: `price_transformer_2025-train20250331-val20260327.pt` — PriceTransformer, 4,588 stocks, seq_len=252, trained on data ≤ 2025-03-31, validated on 2025-04-01 ~ 2026-03-27. **初始资金 100,000 RMB**，最小买卖单位 100 股，涨跌停禁止买卖（auc_limit=2）。**所有策略均为纯做多**。回测了 197 个策略，按夏普比率排序取前 10。
 
-| Strategy | Total Ret | Sharpe | Max DD | Annual |
-|----------|----------:|-------:|-------:|-------:|
-| **Conf-MC5bp-5d** | **+155.5%** | **0.366** | -54.4% | +167.8% |
-| SL-1pct-5d+K3 | +128.3% | 0.261 | -64.6% | +137.9% |
-| StopLoss-3pct-5d | +117.0% | 0.258 | -52.9% | +125.6% |
-| StopLoss-3pct-5d+ML5 | +117.0% | 0.258 | -52.9% | +125.6% |
-| Momentum-LB5-5d | +104.8% | 0.255 | -52.9% | +112.3% |
-| TopK-K5-5d+ML5 | +104.8% | 0.255 | -52.9% | +112.3% |
-| StopLoss-2pct-5d | +109.2% | 0.254 | -52.9% | +117.1% |
-| TopK-K5-5d+SL2 | +109.2% | 0.254 | -52.9% | +117.1% |
-| StopLoss-2pct-5d+ML5 | +109.2% | 0.254 | -52.9% | +117.1% |
-| TopK-K3-5d+SL2 | +133.4% | 0.249 | -70.1% | +143.5% |
+| Strategy | K | Total Ret | Sharpe | Max DD | Annual |
+|----------|---|----------:|-------:|-------:|-------:|
+| **Conf-5d-K15-SL5pct-TP15pct** | 15 | **+179.5%** | **0.514** | **-53.2%** | **+194.3%** |
+| Conf-5d-K15-SL5pct | 15 | +179.5% | 0.514 | -53.2% | +194.3% |
+| ConfStop-5d-K15-SL5-TP15-Hold10 | 15 | +179.5% | 0.514 | -53.2% | +194.3% |
+| Conf-5d-K10-SL5pct-TP15pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| Conf-5d-K10-SL3pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| Conf-5d-K10-SL5pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| ConfStop-5d-K10-SL5-TP15-Hold10 | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| Conf-5d-K10-SL2pct-TP15pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| Conf-5d-K10-SL3pct-TP15pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
+| Conf-5d-K10-SL8pct-TP15pct | 10 | +176.1% | 0.479 | -50.5% | +190.5% |
 
 **关键洞察**:
-- **Conf-MC5bp-5d（置信度加权，最低信心度 5bp，5d预测期）夏普最高 0.366**，总收益 +155.5%，但最大回撤 -54.4% 仍较大
-- **SL-1pct-5d+K3（紧止损1% + TopK-3）夏普 0.261**，更保守的止损有效降低风险
-- **5d 预测期整体优于其他期限**：3d/7d/14d 策略普遍不如 5d
-- **止损 + 动量组合策略表现稳健**：StopLoss-2/3% + ML5 组合多次出现于前 10
-- **1d 预测期策略普遍为负夏普**：说明短期预测波动太大，难以稳定盈利
-- **10 个最优策略均配置 2-3% 止损保护**，有效控制最大回撤在 -55% 左右
+- **Conf-5d-K15** 夏普最高 0.514，总收益 +179.5%，5d 预测期 + 置信度加权最优
+- **K=10 策略（K≤10）回撤更小**：K=10 最大回撤 -50.5%，K=15 最大回撤 -53.2%
+- **止损参数（SL 2%/3%/5%/8%）在 K≤10 时仍无明显差异**——说明 A 股高波动性使得止损阈值差异被市场整体走势吸收
+- **5d 预测期远优于其他期限**：1d 预测期策略普遍为负夏普（-0.05 ~ -0.17）
+- **持仓集中度（K 值）是最大影响因素**：K=3 ~ K=20 中，K=15~20 收益最高，K≤10 回撤更小
 
 ---
 
@@ -288,19 +288,18 @@ predicted_return (regression head last timestep)
 
 所有策略均为**纯做多**（A股不允许做空），利用模型6个预测期限（1d/3d/5d/7d/14d/20d）的多信号优势。
 
-| 策略名称 | Tag | 类型 | 说明 |
-|----------|-----|------|------|
-| TopK-K3-{h} | 5ed5b等 | topk | 等权TopK，K=3 |
-| TopK-K10-{h} | 3f274等 | topk | 等权TopK，K=10 |
-| StopLoss-{n}pct-{h} | fc99f等 | trailing_stop | 追踪止损，n%=止损阈值 |
-| Momentum-LB{n}-{h} | 7ef00等 | momentum_filter | 动量过滤，lookback=n天 |
-| RiskParity-VL{n}-{h} | 469da等 | risk_parity | 波动率倒数加权，vol_lookback=n天 |
-| Confidence-MC{n}bp-{h} | 5f3f9等 | confidence | 置信度加权，min_confidence=n bp |
-| Threshold-{n}pct-{h} | 19888等 | threshold | 预测>n%才入场 |
+| 策略名称 | 类型 | 说明 |
+|----------|------|------|
+| TopK-K{N}-{h} | topk | 等权TopK，K=N |
+| StopLoss-{n}pct-{h} | trailing_stop | 追踪止损，n%=止损阈值 |
+| Momentum-LB{N}-{h} | momentum_filter | 动量过滤，lookback=N天 |
+| RiskParity-VL{N}-{h} | risk_parity | 波动率倒数加权，vol_lookback=N天 |
+| Confidence-MC{N}bp-{h} | confidence | 置信度加权，min_confidence=N bp |
+| Threshold-{n}pct-{h} | threshold | 预测>n%才入场 |
+| Conf-{h}-K{N}-SL{SL}pct-TP{TP}pct | confidence | 置信度加权，K=持仓数，SL/TP为止损/止盈 |
+| ConfStop-{h}-K{N}-SL{SL}-TP{TP}-Hold{H} | confidence_stop | 同上+最大持仓天数限制 |
 
-所有策略tag均为5位MD5 hash（MD5(name:type:horizon:params)[:5]），全局唯一，可用于查询、画图和推送。
-
-> 策略配置保存在 `strategies/configs/diverse_strategies.json`，每个策略tag永久固定。
+策略配置保存在 `src/auto_select_stock/predict/strategies/configs/`，主配置为 `diverse_strategies.json`（原始10策略）和 `optimized_strategies_v2.json`（50策略手动设计版）。
 
 ---
 
@@ -322,16 +321,17 @@ python -m auto_select_stock.cli train-transformer \
 python -m auto_select_stock.cli predict-transformer 600000 \
   --checkpoint models/price_transformer.pt
 
-# Backtest
+# Backtest (single strategy)
 python -m auto_select_stock.cli backtest-transformer --mode topk --top-k 5 ...
 python -m auto_select_stock.cli backtest-per-symbol --workers 4 ...
 
-# Multi-strategy (all 10 at once)
+# Multi-strategy (all strategies at once — shared signal, 1 GPU pass)
 python -m auto_select_stock.cli backtest-strategies --list
 python -m auto_select_stock.cli backtest-strategies \
-  --start 2023-01-01 --end 2024-12-31 \
-  --checkpoint models/price_transformer.pt \
-  --cost-bps 15 --slippage-bps 10
+  --start 2025-04-01 --end 2026-03-27 \
+  --checkpoint models/price_transformer_2025-train20250331-val20260327.pt \
+  --strategies-dir src/auto_select_stock/predict/strategies/configs \
+  --cost-bps 0 --slippage-bps 0
 
 # LLM Scoring
 export OPENAI_API_KEY=your_key
@@ -348,28 +348,51 @@ python -m auto_select_stock.ops_dashboard
 
 ```
 src/auto_select_stock/
-├── cli.py                 # All CLI commands
-├── storage.py             # SQLite I/O (price & financial tables)
-├── data_fetcher.py        # Daily price ingestion via akshare
-├── financials_fetcher.py   # Quarterly report ingestion
-├── scoring.py             # LLM-based stock scoring
-├── ops_dashboard.py       # Web control panel (port 8000)
-│
-└── predict/
-    ├── data.py            # Feature engineering, npz caching
-    ├── torch_model.py     # PriceTransformer architecture
-    ├── train.py           # Training loop with date-window splits
-    ├── inference.py       # PricePredictor (batched, reusable)
-    ├── backtest.py        # BacktestConfig, run_backtest, _collect_signals_batched
-    ├── strategy.py        # build_long_short_portfolio helper
-    ├── checkpoints.py     # Checkpoint save/load
-    └── strategies/        # v0.0.2: JSON-driven strategy system
-        ├── base.py        # Signal dataclass, BaseStrategy ABC
-        ├── __init__.py    # 10 strategy implementations
-        ├── registry.py    # StrategyRegistry (loads JSON configs)
-        ├── runner.py     # run_all_strategies_shared (shared signal collection)
-        └── configs/
-            └── default_strategies.json  # 10 pre-defined strategies
+├── cli.py                  # All CLI commands
+├── config.py               # Environment variable defaults
+├── core/
+│   ├── features.py         # Feature definitions
+│   └── torch_model.py      # PriceTransformer architecture
+├── data/
+│   ├── __init__.py         # financials_fetcher entry point
+│   ├── storage.py          # SQLite I/O (price & financial tables)
+│   ├── fetcher.py          # Daily price ingestion via akshare
+│   ├── financials.py       # Quarterly report ingestion
+│   └── financial_dates.py  # Financial report date tracking
+├── llm/
+│   ├── base.py             # LLM provider interface
+│   ├── openai_client.py    # OpenAI implementation
+│   ├── dummy.py            # Dummy provider for testing
+│   └── nl_parser.py        # Natural language stock screener parser
+├── notify/
+│   ├── pipeline.py         # Daily pipeline orchestration
+│   ├── scheduler.py        # Cron scheduling
+│   ├── push_providers.py   # PushPlus / Bark / Telegram
+│   ├── holdings.py        # Holdings tracking
+│   └── daily_report.py     # Daily report generation
+├── predict/
+│   ├── data.py             # Feature engineering, npz caching
+│   ├── train.py            # Training loop with date-window splits
+│   ├── inference.py        # PricePredictor (batched, reusable)
+│   ├── backtest.py         # BacktestConfig, run_backtest
+│   ├── checkpoints.py      # Checkpoint save/load
+│   ├── strategy.py         # Portfolio construction helpers
+│   └── strategies/         # JSON-driven multi-strategy system
+│       ├── base.py         # Signal dataclass, BaseStrategy ABC
+│       ├── __init__.py     # 10+ strategy implementations
+│       ├── registry.py     # StrategyRegistry (loads JSON configs)
+│       ├── runner.py       # run_all_strategies_shared (shared signals)
+│       ├── custom_strategies.py  # Custom strategy implementations
+│       └── configs/
+│           ├── diverse_strategies.json    # 10 original strategies
+│           └── optimized_strategies_v2.json  # 50 manually designed
+└── web/
+    ├── dashboard.py        # HTML dashboard generation
+    ├── ops_dashboard.py    # Web control panel (port 8000)
+    ├── ops_handlers.py     # Handler functions for ops actions
+    ├── html_report.py      # HTML report generation
+    ├── screener.py         # Stock screening logic
+    └── scoring.py          # LLM scoring integration
 ```
 
 ---
