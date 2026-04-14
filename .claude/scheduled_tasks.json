@@ -5,7 +5,7 @@
       "cron": "7 * * * *",
       "prompt": "在 WSL Ubuntu (fin conda环境) 中运行 /mnt/d/Projects/auto-select-stock/auto_optimize_pipeline.sh\n\n如果 git push 失败（网络问题），不要重试，直接跳过继续。\n\n完成后返回简要运行结果。",
       "createdAt": 1776093404785,
-      "lastFiredAt": 1776121643929,
+      "lastFiredAt": 1776125244542,
       "recurring": true
     },
     {
