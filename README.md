@@ -49,6 +49,21 @@ python -m auto_select_stock.ops_dashboard
 
 ---
 
+## Backtest Results
+
+Top 10 Sharpe strategy comparison (2025-04-01 ~ 2026-03-27):
+
+![Top10 Sharpe Comparison](models/price_transformer_2025_top10_sharpe_comparison.png)
+
+![Top10 Sharpe Metrics](models/price_transformer_2025_top10_sharpe_metrics_bar.png)
+
+Strategy performance comparison:
+
+![Strategy Comparison](models/strategy_comparison.png)
+
+![Strategy Metrics](models/strategy_metrics_bar.png)
+
+---
 ## Architecture
 
 ```
