@@ -1,3 +1,6 @@
 *.pyc
 *.pt
+*.log
 data/*
+models/*_strategies_comparison.json
+models/backtest_*.json
