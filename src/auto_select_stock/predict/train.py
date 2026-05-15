@@ -20,15 +20,23 @@ except Exception:  # noqa: BLE001
 from ..config import DATA_DIR, PREPROCESSED_DIR, REPORT_DIR
 
 
-def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
+def _compute_ranking_loss(
+    pred_reg: torch.Tensor,
+    y_reg: torch.Tensor,
+    date_ids: torch.Tensor = None,
+    margin: float = 0.0,
+) -> torch.Tensor:
     """
-    Pairwise ranking loss (margin-based pairwise Hinge loss).
+    Pairwise ranking loss (margin-based pairwise Hinge loss) computed WITHIN same-date groups.
 
-    For each pair of samples in the batch where one stock outperformed the other,
-    penalize the model if it assigns a higher predicted score to the worse performer.
+    For each pair of samples in the batch where both stocks are from the SAME date
+    and one stock outperformed the other, penalize the model if it assigns a higher
+    predicted score to the worse performer.
 
     pred_reg: (batch, seq_len) - predicted log returns at each step
     y_reg: (batch, seq_len) - actual log returns at each step
+    date_ids: (batch,) - integer date group IDs; only same-date pairs are ranked.
+              If None, falls back to computing across all pairs (backward compat).
     Uses the last timestep prediction for ranking.
     """
     batch_size = pred_reg.size(0)
@@ -39,29 +47,31 @@ def _compute_ranking_loss(pred_reg: torch.Tensor, y_reg: torch.Tensor, margin: f
     pred_last = pred_reg[:, -1]  # (batch,)
     y_last = y_reg[:, -1]        # (batch,)
 
-    # Create all pairs: i outperforms j if y_last[i] > y_last[j]
-    # Loss = max(0, margin - (pred_last[i] - pred_last[j])) when y[i] > y[j]
-    # i.e., penalize if pred[i] <= pred[j] + margin when y[i] > y[j]
-
     # Efficient pairwise computation
-    # pred_diff[i,j] = pred_last[i] - pred_last[j]
-    # y_outperform[i,j] = 1 if y_last[i] > y_last[j], else 0
     pred_i = pred_last.unsqueeze(1)    # (batch, 1)
     pred_j = pred_last.unsqueeze(0)    # (1, batch)
     y_i = y_last.unsqueeze(1)
     y_j = y_last.unsqueeze(0)
 
-    # Only consider cases where i actually outperforms j
+    # Mask: only consider pairs where i outperforms j
     outperform_mask = (y_i > y_j).float()  # (batch, batch)
-    # Don't penalize diagonal (i==j)
+
+    # Exclude diagonal (i==j)
     diag_mask = torch.eye(batch_size, device=pred_reg.device, dtype=torch.float)
-    outperform_mask = outperform_mask * (1 - diag_mask)
+
+    if date_ids is not None:
+        # Only consider pairs from the SAME date (ranking should be within same day)
+        date_i = date_ids.unsqueeze(1)  # (batch, 1)
+        date_j = date_ids.unsqueeze(0)  # (1, batch)
+        same_date_mask = (date_i == date_j).float()  # (batch, batch)
+        combined_mask = outperform_mask * same_date_mask * (1 - diag_mask)
+    else:
+        # Fallback: compute across all pairs (backward compat for evaluate())
+        combined_mask = outperform_mask * (1 - diag_mask)
 
     pred_diff = pred_i - pred_j  # (batch, batch): positive means i ranked higher
-    # Loss: margin - pred_diff, clamped at 0, only where i outperforms j
     pair_loss = torch.clamp_min(margin - pred_diff, 0.0)
-    # Only count pairs where i outperforms j
-    ranking_loss = (pair_loss * outperform_mask).sum() / torch.clamp_min(outperform_mask.sum(), 1.0)
+    ranking_loss = (pair_loss * combined_mask).sum() / torch.clamp_min(combined_mask.sum(), 1.0)
 
     return ranking_loss
 
@@ -94,7 +104,7 @@ def evaluate(model: nn.Module, loader: DataLoader, loss_fn_reg, loss_fn_cls, cfg
     total_last_mae = 0.0
     steps = 0
     with torch.no_grad():
-        for x, y_reg_or_dict, y_cls in loader:
+        for x, y_reg_or_dict, y_cls, _ in loader:
             x = x.to(device)
             y_cls = y_cls.to(device)
             out = model(x)
@@ -216,6 +226,7 @@ def collate_multi_horizon(batch):
     """Collate function for multi-horizon dataset: packs y_reg_dict into padded tensors."""
     x = torch.stack([b[0] for b in batch])
     y_cls = torch.stack([b[2] for b in batch])
+    date_ids = torch.tensor([b[3] for b in batch], dtype=torch.long)
     # y_reg_dict: {h: array} where each array has shape (seq_len - h,)
     # Pad each horizon to the same length (max across batch)
     y_reg_dict_packed: Dict[int, torch.Tensor] = {}
@@ -227,7 +238,7 @@ def collate_multi_horizon(batch):
             l = b[1][h].shape[0]
             padded[i, :l] = b[1][h]
         y_reg_dict_packed[h] = torch.tensor(padded, dtype=torch.float32)
-    return x, y_reg_dict_packed, y_cls
+    return x, y_reg_dict_packed, y_cls, date_ids
 
 
 def train_transformer(
@@ -359,10 +370,11 @@ def train_transformer(
             resume_pending = False
         start_batch_idx = skip_batches + 1
 
-        for batch_idx, (x, y_reg_or_dict, y_cls) in enumerate(progress_iter, start_batch_idx):
+        for batch_idx, (x, y_reg_or_dict, y_cls, date_ids) in enumerate(progress_iter, start_batch_idx):
             batch_start = time.time()
             x = x.to(device)
             y_cls = y_cls.to(device)
+            date_ids = date_ids.to(device)
 
             # Profile backward pass on steps 3-5 to avoid CUDA OOM.
             # Forward runs without profiler instrumentation to save GPU memory.
@@ -396,7 +408,7 @@ def train_transformer(
                     total_reg_loss += loss_fn_reg(pred_reg_h[:, :min_len], y_reg_h[:, :min_len])
                     pred_cls_h = pred_cls_all[h_idx]
                     total_cls_loss += loss_fn_cls(pred_cls_h[:, :min_len], y_cls[:, :min_len])
-                    total_rank_loss += _compute_ranking_loss(pred_reg_h[:, -1:], y_reg_h[:, -1:])
+                    total_rank_loss += _compute_ranking_loss(pred_reg_h[:, -1:], y_reg_h[:, -1:], date_ids)
                 reg_loss = total_reg_loss / len(cfg.horizons)
                 cls_loss = total_cls_loss / len(cfg.horizons)
                 rank_loss = total_rank_loss / len(cfg.horizons)
@@ -405,7 +417,7 @@ def train_transformer(
                 pred_reg, pred_cls = out
                 reg_loss = loss_fn_reg(pred_reg, y_reg)
                 cls_loss = loss_fn_cls(pred_cls, y_cls)
-                rank_loss = _compute_ranking_loss(pred_reg, y_reg)
+                rank_loss = _compute_ranking_loss(pred_reg, y_reg, date_ids)
             lambda_reg = getattr(cfg, "lambda_reg", 0.1)
             lambda_cls = getattr(cfg, "lambda_cls", 10.0)
             lambda_rank = getattr(cfg, "lambda_rank", 1.0)

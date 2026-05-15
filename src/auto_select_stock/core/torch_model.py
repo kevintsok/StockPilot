@@ -174,7 +174,7 @@ class TrainConfig:
         lr_min: Minimum LR for cosine annealing schedule.
         horizons: Prediction horizons for multi-head output (e.g. [1, 3, 5]).
     """
-    seq_len: int = 1024
+    seq_len: int = 252  # 约1年交易日，减少噪声，强化近期模式
     window_stride: int = 10
     batch_size: int = 16
     epochs: int = 20
@@ -190,9 +190,9 @@ class TrainConfig:
     financial_columns: Optional[List[str]] = None
     technical_columns: Optional[List[str]] = None  # if None, defaults to TECHNICAL_FEATURE_COLUMNS
     target_mode: str = "log_return"  # "log_return" or "close"
-    lambda_reg: float = 0.1  # regression weight (small - ranking signal is secondary)
-    lambda_cls: float = 10.0  # classification weight (dominant - provides directional stability)
-    lambda_rank: float = 1.0  # pairwise ranking loss weight (ListMLE-style)
+    lambda_reg: float = 1.0  # regression weight — 回归损失主导，让模型学会"涨多少"
+    lambda_cls: float = 0.1  # classification weight — 分类头对排序无用，大幅降低
+    lambda_rank: float = 5.0  # pairwise ranking loss weight — 排序损失是核心
     save_path: Path = MODEL_DIR / "price_transformer.pt"
     experiment_name: str = "experiment"
     checkpoint_steps: int = 10000

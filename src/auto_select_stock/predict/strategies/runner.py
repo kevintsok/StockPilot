@@ -273,13 +273,12 @@ def run_all_strategies_shared(
                 del positions[sym]
                 del entry_dates[sym]
 
-            # ── 4d. 持仓更新（没被卖出的，entry_price更新为T+1收盘）─
-            # 对于仍持有的仓位：用 next_close 更新 entry_price（下一日计算收益用）
-            # 但分拆股票（auc_limit=2）不更新——next_close 是分拆价，
-            # 更新会导致 entry_price 虚增，进而扭曲后续 realized_ret。
+            # ── 4d. 持仓更新（没被卖出的，current_price更新为T+1收盘）─
+            # entry_price 保持原始买入价不变，用于正确计算 unrealized_pnl_pct
+            # current_price 追踪当日收盘价，用于 on_day_end 更新 prev_close_cache
             for sym in list(positions.keys()):
                 if sym in next_close_map and auc_map.get(sym) != 2:
-                    positions[sym]["entry_price"] = next_close_map[sym]
+                    positions[sym]["current_price"] = next_close_map[sym]
 
             # ── 4e. 买入新目标持仓（用开盘价，可用现金中支出）────
             # 可用现金 = 昨日结余现金 + 已解冻的昨日卖出所得
@@ -393,10 +392,12 @@ def run_all_strategies_shared(
                     except Exception:
                         holding_days = 0
                 unrealized = 0.0
+                current_price = pos.get("current_price", pos["entry_price"])
                 if sym in next_close_map and pos["entry_price"] > 0:
-                    unrealized = (next_close_map[sym] - pos["entry_price"]) / pos["entry_price"]
+                    unrealized = (current_price - pos["entry_price"]) / pos["entry_price"]
                 cache["_portfolio"][sym] = {
                     "entry_price": pos["entry_price"],
+                    "current_price": current_price,
                     "shares": pos["shares"],
                     "holding_days": holding_days,
                     "entry_date": entry_date_str,

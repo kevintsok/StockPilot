@@ -334,6 +334,15 @@ class StreamingPriceDataset(Dataset):
             self.sample_offsets.append(total)
             self._entries.append(_DatasetEntry(symbol=item.symbol, start=start_base, count=count))
         self.total_samples = total
+        # Pre-compute date_id for each sample: date_id = ending_date_index (globally unique)
+        # date_id uniquely identifies the calendar date of the sample's ending window
+        self._date_ids = np.zeros(self.total_samples, dtype=np.int64)
+        ptr = 0
+        for entry in self._entries:
+            for i in range(entry.count):
+                date_id = entry.start + i * self.stride + self.seq_len
+                self._date_ids[ptr] = date_id
+                ptr += 1
 
     def __len__(self) -> int:
         return self.total_samples
@@ -413,6 +422,7 @@ class StreamingPriceDataset(Dataset):
             torch.tensor(x, dtype=torch.float32),
             y_reg_dict,
             torch.tensor(y_cls, dtype=torch.float32),
+            self._date_ids[idx],  # date_id: ending date index for ranking group
         )
 
 
@@ -663,8 +673,10 @@ def _date_split_for_symbol(
         return None
     # Normalize to int64 nanoseconds to avoid dtype-mismatch comparisons.
     dates_ns = pd.to_datetime(dates).astype("datetime64[ns]").view("int64")
-    train_end_ns = np.int64(pd.to_datetime(train_end).to_datetime64())
-    val_end_ns = np.int64(pd.to_datetime(val_end).to_datetime64())
+    # Use Timestamp.value for correct ns-since-epoch (to_datetime64() without args
+    # defaults to a different unit and loses precision, causing train_end_idx=-1)
+    train_end_ns = train_end.value
+    val_end_ns = val_end.value
     train_end_idx = int(np.searchsorted(dates_ns, train_end_ns, side="right") - 1)
     if train_end_idx < seq_len:
         return None
