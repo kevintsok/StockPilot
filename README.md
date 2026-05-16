@@ -15,7 +15,8 @@ Predict next-day returns, rank stocks, and compare 10+ trading strategies in one
 2. **Train** a Transformer model to predict next-day returns
 3. **Backtest** 10+ trading strategies (shared signal, single GPU pass)
 4. **Score** stocks with LLM for qualitative valuation
-5. **Dashboard** — local web UI for everything
+5. **Sector Rotation** — track 90 industry sectors, correlation heatmaps, cycle analysis
+6. **Dashboard** — local web UI for everything
 
 ---
 
@@ -299,6 +300,30 @@ predicted_return (regression head last timestep)
 
 ---
 
+## Sector Rotation Tracking
+
+Track 90 A-share industry sectors with correlation heatmaps, normalized time series, and cycle analysis.
+
+```bash
+# Fetch sector history (90 industry sectors from THS via akshare)
+python -m auto_select_stock.cli fetch-sectors --start 2018-01-01
+
+# Start dashboard
+python3 serve_sector_rotation.py
+# Open http://127.0.0.1:8000/sector-report
+```
+
+**Dashboard Features:**
+- **Correlation Heatmap** — 90×90 Pearson correlation matrix of sector returns
+- **Normalized Time Series** — Multi-sector comparison with dual-range slider for time selection
+- **Sector Statistics** — Top/bottom performers by momentum, highest correlated sector pairs
+- **Cluster Analysis** — Groups of sectors with high mutual correlation
+- **Cycle Detection** — Up/down cycle duration and magnitude statistics per sector
+
+**Data:** `sector` and `sector_daily` tables in SQLite (`data/stock.db`), sourced from 同花顺 (THS) via akshare.
+
+---
+
 ## Available Strategies
 
 所有策略均为**纯做多**（A股不允许做空），利用模型6个预测期限（1d/3d/5d/7d/14d/20d）的多信号优势。
@@ -325,6 +350,10 @@ predicted_return (regression head last timestep)
 python -m auto_select_stock.cli fetch-all --start 2018-01-01 [--limit N]
 python -m auto_select_stock.cli update-daily [symbols...]
 python -m auto_select_stock.cli fetch-financials [--limit N]
+
+# Sector Rotation
+python -m auto_select_stock.cli fetch-sectors [--start 2018-01-01]
+python3 serve_sector_rotation.py  # http://127.0.0.1:8000/sector-report
 
 # Training
 python -m auto_select_stock.cli train-transformer \
@@ -370,10 +399,12 @@ src/auto_select_stock/
 │   └── torch_model.py      # PriceTransformer architecture
 ├── data/
 │   ├── __init__.py         # financials_fetcher entry point
-│   ├── storage.py          # SQLite I/O (price & financial tables)
+│   ├── storage.py          # SQLite I/O (price, financial, sector tables)
 │   ├── fetcher.py          # Daily price ingestion via akshare
 │   ├── financials.py       # Quarterly report ingestion
-│   └── financial_dates.py  # Financial report date tracking
+│   ├── financial_dates.py  # Financial report date tracking
+│   ├── sector_fetcher.py   # Sector data ingestion (THS industry/concept)
+│   └── sector_analysis.py  # Correlation & cycle analysis
 ├── llm/
 │   ├── base.py             # LLM provider interface
 │   ├── openai_client.py    # OpenAI implementation
@@ -407,7 +438,9 @@ src/auto_select_stock/
     ├── ops_handlers.py     # Handler functions for ops actions
     ├── html_report.py      # HTML report generation
     ├── screener.py         # Stock screening logic
-    └── scoring.py          # LLM scoring integration
+    ├── scoring.py          # LLM scoring integration
+    └── templates/
+        └── ops_sector_rotation.html  # Sector rotation interactive dashboard
 ```
 
 ---
