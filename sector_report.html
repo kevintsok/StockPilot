@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>A股板块轮动分析报告</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    .container { max-width: 1600px; margin: 0 auto; }
+    h1 { font-size: 28px; font-weight: 600; margin-bottom: 8px; color: #f8fafc; }
+    .subtitle { color: #64748b; font-size: 14px; margin-bottom: 16px; }
+
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 0; }
+    .tab { padding: 12px 24px; border-radius: 8px 8px 0 0; border: 1px solid transparent; border-bottom: none; cursor: pointer; font-size: 14px; color: #94a3b8; background: transparent; transition: all 0.2s; }
+    .tab:hover { color: #e2e8f0; background: #1e293b; }
+    .tab.active { color: #3b82f6; background: #1e293b; border-color: #334155; font-weight: 500; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 1px solid #334155; }
+    .chart-container { position: relative; height: 500px; margin: 16px 0; min-height: 400px; width: 100%; }
+    .heatmap-container { overflow: auto; padding: 10px; text-align: center; min-height: 500px; }
+    canvas { max-width: 100%; display: block; margin: 0 auto; background: #1e293b; }
+    .controls { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+    .btn { padding: 8px 16px; border-radius: 8px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 13px; }
+    .btn:hover { background: #475569; }
+    .time-range { display: flex; gap: 6px; }
+    .time-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #1e293b; color: #94a3b8; cursor: pointer; font-size: 12px; }
+    .time-btn:hover { border-color: #3b82f6; color: #e2e8f0; }
+    .time-btn.active { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+    .sector-select { display: flex; flex-wrap: wrap; gap: 8px; max-height: 180px; overflow-y: auto; padding: 12px; background: #0f172a; border-radius: 8px; margin-bottom: 12px; }
+    .sector-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: #1e293b; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .sector-item:hover { background: #334155; }
+    .sector-item input { cursor: pointer; }
+    .sector-item.selected { background: #1e40af; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-top: 16px; }
+    .stat-card { background: #0f172a; border-radius: 8px; padding: 16px; border: 1px solid #334155; }
+    .stat-card h4 { font-size: 13px; color: #64748b; margin-bottom: 8px; }
+    .stat-card .value { font-size: 20px; font-weight: 600; color: #f8fafc; }
+    .stat-card .change { font-size: 13px; margin-top: 4px; }
+    .positive { color: #ef4444; }
+    .negative { color: #22c55e; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #334155; font-size: 13px; }
+    th { color: #94a3b8; font-weight: 500; cursor: pointer; user-select: none; }
+    th:hover { color: #e2e8f0; }
+    th.sorted-asc::after { content: ' ▲'; }
+    th.sorted-desc::after { content: ' ▼'; }
+    td { color: #e2e8f0; }
+    tr:hover { background: rgba(59, 130, 246, 0.1); }
+    .loading { color: #94a3b8; text-align: center; padding: 60px 20px; font-size: 16px; }
+    .zoom-hint { font-size: 12px; color: #64748b; margin-top: 8px; text-align: center; }
+    .legend { display: flex; gap: 20px; justify-content: center; margin-top: 12px; font-size: 12px; color: #94a3b8; flex-wrap: wrap; align-items: center; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-color { width: 16px; height: 16px; border-radius: 3px; }
+    .colorbar { display: flex; align-items: center; gap: 8px; }
+    .colorbar-gradient { width: 200px; height: 16px; border-radius: 3px; background: linear-gradient(to right, rgb(255,200,0), rgb(255,100,0), rgb(255,0,0)); }
+    #tooltip { position: absolute; background: #1e293b; border: 1px solid #475569; padding: 8px 12px; border-radius: 6px; font-size: 12px; pointer-events: none; display: none; z-index: 100; }
+    .tab-content { animation: fadeIn 0.2s; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    input[type="range"] { -webkit-appearance: none; appearance: none; height: 6px; background: transparent; }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #3b82f6;
+      cursor: pointer;
+      border: 2px solid #fff;
+      margin-top: -5px;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #3b82f6;
+      cursor: pointer;
+      border: 2px solid #fff;
+    }
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 6px;
+      background: transparent;
+    }
+    input[type="range"]::-moz-range-track {
+      height: 6px;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>A股板块轮动分析报告</h1>
+    <p class="subtitle">数据范围: 2018-01-01 至 2026-05-11 | 90个行业板块 | 1804个交易日</p>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="heatmap">相关性热力图</button>
+      <button class="tab" data-tab="timeseries">归一化走势图</button>
+      <button class="tab" data-tab="stats">板块统计</button>
+      <button class="tab" data-tab="clusters">板块集群</button>
+      <button class="tab" data-tab="cycles">周期特征</button>
+    </div>
+
+    <!-- Tab 1: 相关性热力图 -->
+    <div class="tab-content active" id="tab-heatmap">
+      <div class="card">
+        <div class="heatmap-container">
+          <canvas id="heatmapCanvas" width="900" height="900"></canvas>
+          <div id="tooltip"></div>
+        </div>
+        <div class="legend">
+          <span style="color:#94a3b8;">相关系数:</span>
+          <div class="colorbar">
+            <span style="color:#94a3b8;">0</span>
+            <div class="colorbar-gradient"></div>
+            <span style="color:#94a3b8;">+1</span>
+          </div>
+          <div class="legend-item"><div class="legend-color" style="background:rgb(255,200,0);"></div>0.0 (弱)</div>
+          <div class="legend-item"><div class="legend-color" style="background:rgb(255,100,0);"></div>0.5 (中)</div>
+          <div class="legend-item"><div class="legend-color" style="background:rgb(255,0,0);"></div>1.0 (强)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: 归一化走势图 -->
+    <div class="tab-content" id="tab-timeseries">
+      <div class="card">
+        <div class="controls">
+          <div class="time-range">
+            <button class="time-btn" data-range="3M">3个月</button>
+            <button class="time-btn" data-range="6M">6个月</button>
+            <button class="time-btn" data-range="1Y">1年</button>
+            <button class="time-btn" data-range="3Y">3年</button>
+            <button class="time-btn active" data-range="ALL">全部</button>
+          </div>
+          <button class="btn" id="selectAll">全选</button>
+          <button class="btn" id="selectNone">清空</button>
+          <button class="btn" id="selectTop10">动量前10</button>
+        </div>
+        <div class="controls">
+          <span style="color:#94a3b8;font-size:13px;">时间范围:</span>
+          <div style="position:relative;width:400px;height:30px;margin:0 10px;" id="sliderContainer">
+            <div id="sliderTrack" style="position:absolute;top:50%;left:0;right:0;height:6px;background:#475569;border-radius:3px;transform:translateY(-50%);"></div>
+            <div id="sliderRange" style="position:absolute;top:50%;height:6px;background:#3b82f6;border-radius:3px;transform:translateY(-50%);"></div>
+            <div id="sliderOverlay" style="position:absolute;top:0;left:0;right:0;bottom:0;cursor:pointer;z-index:3;"></div>
+            <input type="range" id="timeSliderStart" min="0" max="100" value="0" style="position:absolute;width:100%;top:50%;transform:translateY(-50%);z-index:1;pointer-events:none;">
+            <input type="range" id="timeSliderEnd" min="0" max="100" value="100" style="position:absolute;width:100%;top:50%;transform:translateY(-50%);z-index:2;pointer-events:none;">
+          </div>
+          <span id="timeSliderLabel" style="color:#94a3b8;font-size:13px;min-width:180px;"></span>
+        </div>
+        <div class="sector-select" id="sectorList"></div>
+        <div class="chart-container" id="chartContainer">
+          <canvas id="timeSeriesChart"></canvas>
+        </div>
+        <p class="zoom-hint" id="chartInfo"></p>
+      </div>
+    </div>
+
+    <!-- Tab 3: 板块统计 -->
+    <div class="tab-content" id="tab-stats">
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><h4>板块总数</h4><div class="value">90</div></div>
+        <div class="stat-card"><h4>强势板块 (近60日)</h4><div class="value positive" id="topSector">-</div><div class="change" id="topSectorChange">-</div></div>
+        <div class="stat-card"><h4>弱势板块 (近60日)</h4><div class="value negative" id="bottomSector">-</div><div class="change" id="bottomSectorChange">-</div></div>
+        <div class="stat-card"><h4>最高相关板块对</h4><div class="value" id="topCorr">-</div><div class="change" id="topCorrValue">-</div></div>
+      </div>
+    </div>
+
+    <!-- Tab 4: 板块集群 -->
+    <div class="tab-content" id="tab-clusters">
+      <div class="card">
+        <table id="clusterTable">
+          <thead><tr><th>板块集群</th><th>成分板块</th><th>相关系数</th><th>特征</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab 5: 周期特征 -->
+    <div class="tab-content" id="tab-cycles">
+      <div class="card">
+        <div class="controls">
+          <span style="color:#94a3b8;font-size:13px;">点击表头排序 | 共 <span id="cycleCount">0</span> 个板块</span>
+          <button class="btn" id="exportCycles">导出CSV</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table id="cycleTable">
+            <thead>
+              <tr>
+                <th data-sort="name">板块</th>
+                <th data-sort="avgUp">平均上涨天数</th>
+                <th data-sort="avgDown">平均下跌天数</th>
+                <th data-sort="maxUp">最大上涨天数</th>
+                <th data-sort="maxDown">最大下跌天数</th>
+                <th data-sort="avgUpPct">平均涨幅</th>
+                <th data-sort="avgDownPct">平均跌幅</th>
+                <th data-sort="cycleCount">周期数</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+const COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#14b8a6','#06b6d4','#3b82f6','#8b5cf6','#d946ef','#ec4899','#06b6d4','#84cc16','#f59e0b','#6366f1','#a855f7'];
+
+let corrData = null, timeSeriesData = null, cycleData = null;
+let lineChart = null;
+let chartInitialized = { timeseries: false, heatmap: false };
+let selectedSectors = new Set();
+let currentSortField = 'avgUp';
+let currentSortDir = 'desc';
+
+async function init() {
+  try {
+    const [corrRes, tsRes] = await Promise.all([
+      fetch('data/corr_matrix.json'),
+      fetch('data/sector_timeseries_sampled.json')
+    ]);
+    if (!corrRes.ok || !tsRes.ok) throw new Error('数据加载失败');
+    corrData = await corrRes.json();
+    timeSeriesData = await tsRes.json();
+
+    initTabs();
+    initSectorList();
+    // Initialize heatmap since it's the default active tab
+    setTimeout(initHeatmap, 100);
+    updateStats();
+    updateClusterTable();
+    await computeCycleData();
+    updateCycleTable();
+  } catch (e) {
+    document.querySelector('.container').innerHTML = `<div class="loading">数据加载失败: ${e.message}<br><br>请确保运行: python3 serve_sector_rotation.py</div>`;
+  }
+}
+
+function initTabs() {
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      const contentId = 'tab-' + tab.dataset.tab;
+      const content = document.getElementById(contentId);
+      content.classList.add('active');
+
+      // Initialize charts when their tab is first shown
+      if (tab.dataset.tab === 'timeseries' && !chartInitialized.timeseries) {
+        chartInitialized.timeseries = true;
+        setTimeout(() => initTimeSeriesChart(), 50);
+      }
+      if (tab.dataset.tab === 'heatmap' && !chartInitialized.heatmap) {
+        chartInitialized.heatmap = true;
+        initHeatmap();
+      }
+    };
+  });
+}
+
+function initSectorList() {
+  const container = document.getElementById('sectorList');
+  const codes = Object.keys(timeSeriesData);
+
+  codes.forEach((code, idx) => {
+    const item = document.createElement('label');
+    item.className = 'sector-item' + (idx < 10 ? ' selected' : '');
+    item.innerHTML = `<input type="checkbox" ${idx < 10 ? 'checked' : ''} value="${code}">${code}`;
+    item.querySelector('input').addEventListener('change', (e) => {
+      if (e.target.checked) selectedSectors.add(code);
+      else selectedSectors.delete(code);
+      item.className = 'sector-item' + (e.target.checked ? ' selected' : '');
+      updateLineChart();
+    });
+    container.appendChild(item);
+    if (idx < 10) selectedSectors.add(code);
+  });
+
+  document.getElementById('selectAll').onclick = () => {
+    Object.keys(timeSeriesData).forEach(c => selectedSectors.add(c));
+    document.querySelectorAll('.sector-item input').forEach(cb => { cb.checked = true; cb.closest('.sector-item').className = 'sector-item selected'; });
+    updateLineChart();
+  };
+
+  document.getElementById('selectNone').onclick = () => {
+    selectedSectors.clear();
+    document.querySelectorAll('.sector-item input').forEach(cb => { cb.checked = false; cb.closest('.sector-item').className = 'sector-item'; });
+    updateLineChart();
+  };
+
+  document.getElementById('selectTop10').onclick = () => {
+    const momentum = Object.keys(timeSeriesData).map(code => {
+      const vals = timeSeriesData[code].values;
+      if (vals.length < 60) return { code, m: 0 };
+      const m = (vals[vals.length-1] / vals[vals.length-20] - 1) - (vals[vals.length-20] / vals[vals.length-60] - 1);
+      return { code, m };
+    });
+    momentum.sort((a, b) => b.m - a.m);
+    selectedSectors.clear();
+    momentum.slice(0, 10).forEach(s => selectedSectors.add(s.code));
+    document.querySelectorAll('.sector-item input').forEach(cb => {
+      const checked = selectedSectors.has(cb.value);
+      cb.checked = checked;
+      cb.closest('.sector-item').className = 'sector-item' + (checked ? ' selected' : '');
+    });
+    updateLineChart();
+  };
+}
+
+function corrToColor(corr) {
+  // Remap correlation to color
+  // Low correlation (0-0.5): yellow to orange
+  // High correlation (0.5-1.0): orange to red
+  const c = Math.max(0, Math.min(1, corr)); // Only positive correlations matter for visual
+
+  if (c <= 0.5) {
+    // Yellow (0) to Orange (0.5)
+    const t = c / 0.5;
+    const r = 255;
+    const g = Math.round(200 * t);
+    const b = 0;
+    return `rgb(${r},${g},${b})`;
+  } else {
+    // Orange (0.5) to Red (1.0)
+    const t = (c - 0.5) / 0.5;
+    const r = 255;
+    const g = Math.round(100 * (1 - t));
+    const b = 0;
+    return `rgb(${r},${g},${b})`;
+  }
+}
+
+function initHeatmap() {
+  const canvas = document.getElementById('heatmapCanvas');
+  if (!canvas) { console.error('heatmap canvas not found'); return; }
+  if (!corrData || !corrData.codes) { console.error('corrData not loaded'); return; }
+
+  const ctx = canvas.getContext('2d');
+  const codes = corrData.codes;
+  const matrix = corrData.matrix;
+  const n = codes.length;
+  const cellSize = Math.max(5, Math.floor(800 / n));
+
+  canvas.width = n * cellSize;
+  canvas.height = n * cellSize;
+  console.log(`Drawing heatmap: ${n}x${n}, cellSize=${cellSize}`);
+
+  // Draw background
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const tooltip = document.getElementById('tooltip');
+
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const color = corrToColor(matrix[i][j]);
+      ctx.fillStyle = color;
+      ctx.fillRect(j * cellSize, i * cellSize, cellSize - 1, cellSize - 1);
+    }
+  }
+
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const i = Math.floor(y / cellSize);
+    const j = Math.floor(x / cellSize);
+    if (i >= 0 && i < n && j >= 0 && j < n) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 10) + 'px';
+      tooltip.style.top = (e.clientY + 10) + 'px';
+      tooltip.innerHTML = `<strong>${codes[i]}</strong> vs <strong>${codes[j]}</strong><br>相关系数: ${matrix[i][j].toFixed(3)}`;
+    }
+  };
+
+  canvas.onmouseleave = () => tooltip.style.display = 'none';
+}
+
+function initTimeSeriesChart() {
+  const ctx = document.getElementById('timeSeriesChart').getContext('2d');
+
+  lineChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { display: true, position: 'right', labels: { color: '#94a3b8', font: { size: 10 }, boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            title: (items) => items[0] ? new Date(items[0].raw.x * 86400000).toISOString().split('T')[0] : '',
+            label: (ctx) => `${ctx.dataset.label}: ${(ctx.raw.y * 100 - 100).toFixed(1)}%`
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          ticks: {
+            color: '#64748b',
+            callback: (val) => {
+              const d = new Date(val * 86400000);
+              return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+            },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 12
+          },
+          grid: { color: '#334155' }
+        },
+        y: {
+          ticks: { color: '#64748b', callback: (val) => `${(val * 100 - 100).toFixed(0)}%` },
+          grid: { color: '#334155' }
+        }
+      }
+    }
+  });
+
+  // Time range buttons
+  document.querySelectorAll('.time-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      updateLineChart();
+    };
+  });
+
+  // Dual slider
+  const sliderStart = document.getElementById('timeSliderStart');
+  const sliderEnd = document.getElementById('timeSliderEnd');
+  const sliderRange = document.getElementById('sliderRange');
+  const sliderOverlay = document.getElementById('sliderOverlay');
+  const sliderContainer = document.getElementById('sliderContainer');
+
+  let activeSlider = null;
+
+  function updateSliderStyle() {
+    const start = parseInt(sliderStart.value);
+    const end = parseInt(sliderEnd.value);
+    sliderRange.style.left = start + '%';
+    sliderRange.style.width = (end - start) + '%';
+  }
+
+  function getPercentFromEvent(e) {
+    const rect = sliderContainer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    return Math.max(0, Math.min(100, (x / rect.width) * 100));
+  }
+
+  function handleSliderDown(e) {
+    e.preventDefault();
+    const percent = getPercentFromEvent(e);
+    const startVal = parseInt(sliderStart.value);
+    const endVal = parseInt(sliderEnd.value);
+    const startDist = Math.abs(percent - startVal);
+    const endDist = Math.abs(percent - endVal);
+    activeSlider = (startDist < endDist) ? 'start' : 'end';
+    handleSliderMove(e);
+  }
+
+  function handleSliderMove(e) {
+    if (!activeSlider) return;
+    const percent = Math.round(getPercentFromEvent(e));
+    if (activeSlider === 'start') {
+      let start = percent;
+      const end = parseInt(sliderEnd.value);
+      if (start > end - 5) start = end - 5;
+      if (start < 0) start = 0;
+      sliderStart.value = start;
+    } else {
+      let end = percent;
+      const start = parseInt(sliderStart.value);
+      if (end < start + 5) end = start + 5;
+      if (end > 100) end = 100;
+      sliderEnd.value = end;
+    }
+    updateSliderStyle();
+    updateLineChart();
+  }
+
+  function handleSliderUp() {
+    activeSlider = null;
+  }
+
+  sliderOverlay.addEventListener('mousedown', handleSliderDown);
+  document.addEventListener('mousemove', handleSliderMove);
+  document.addEventListener('mouseup', handleSliderUp);
+
+  sliderOverlay.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    handleSliderDown(e.touches[0]);
+  });
+  document.addEventListener('touchmove', (e) => {
+    if (activeSlider) handleSliderMove(e.touches[0]);
+  });
+  document.addEventListener('touchend', handleSliderUp);
+
+  updateSliderStyle();
+  updateLineChart();
+}
+
+function updateLineChart() {
+  if (!lineChart || !timeSeriesData) return;
+
+  const timeRange = document.querySelector('.time-btn.active')?.dataset.range || 'ALL';
+
+  const firstDate = new Date('2018-01-01').getTime() / 86400000;
+  const lastDate = new Date('2026-05-11').getTime() / 86400000;
+  const totalDays = lastDate - firstDate;
+
+  let startDay, endDay;
+  if (timeRange === '3M') {
+    startDay = lastDate - 90;
+    endDay = lastDate;
+  } else if (timeRange === '6M') {
+    startDay = lastDate - 180;
+    endDay = lastDate;
+  } else if (timeRange === '1Y') {
+    startDay = lastDate - 365;
+    endDay = lastDate;
+  } else if (timeRange === '3Y') {
+    startDay = lastDate - 1095;
+    endDay = lastDate;
+  } else {
+    const startPct = parseInt(document.getElementById('timeSliderStart').value);
+    const endPct = parseInt(document.getElementById('timeSliderEnd').value);
+    startDay = firstDate + (totalDays * startPct / 100);
+    endDay = firstDate + (totalDays * endPct / 100);
+  }
+
+  const datasets = [];
+  let idx = 0;
+  selectedSectors.forEach(code => {
+    const data = timeSeriesData[code];
+    if (!data) return;
+    const points = [];
+    for (let i = 0; i < data.dates.length; i++) {
+      const day = new Date(data.dates[i]).getTime() / 86400000;
+      if (day >= startDay && day <= endDay) points.push({ x: day, y: data.values[i] });
+    }
+    if (points.length > 0) {
+      datasets.push({ label: code, data: points, borderColor: COLORS[idx % COLORS.length], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.1 });
+      idx++;
+    }
+  });
+
+  lineChart.data.datasets = datasets;
+  lineChart.options.scales.x.min = startDay;
+  lineChart.options.scales.x.max = endDay;
+  lineChart.update('none');
+
+  const startStr = new Date(startDay * 86400000).toISOString().split('T')[0];
+  const endStr = new Date(endDay * 86400000).toISOString().split('T')[0];
+  document.getElementById('chartInfo').textContent = `已选择 ${selectedSectors.size} 个板块 | ${startStr} ~ ${endStr}`;
+}
+
+function updateStats() {
+  const momentum = Object.keys(timeSeriesData).map(code => {
+    const vals = timeSeriesData[code].values;
+    if (vals.length < 60) return null;
+    return { code, change: (vals[vals.length-1] / vals[vals.length-60] - 1) * 100 };
+  }).filter(x => x).sort((a, b) => b.change - a.change);
+
+  if (momentum.length > 0) {
+    document.getElementById('topSector').textContent = momentum[0].code;
+    document.getElementById('topSectorChange').textContent = `+${momentum[0].change.toFixed(1)}%`;
+    document.getElementById('topSectorChange').className = 'change positive';
+    document.getElementById('bottomSector').textContent = momentum[momentum.length-1].code;
+    document.getElementById('bottomSectorChange').textContent = `${momentum[momentum.length-1].change.toFixed(1)}%`;
+    document.getElementById('bottomSectorChange').className = 'change negative';
+  }
+
+  let maxCorr = 0, topPair = '';
+  for (let i = 0; i < corrData.codes.length; i++) {
+    for (let j = i + 1; j < corrData.codes.length; j++) {
+      if (corrData.matrix[i][j] > maxCorr) {
+        maxCorr = corrData.matrix[i][j];
+        topPair = `${corrData.codes[i]} - ${corrData.codes[j]}`;
+      }
+    }
+  }
+  document.getElementById('topCorr').textContent = topPair;
+  document.getElementById('topCorrValue').textContent = maxCorr.toFixed(3);
+}
+
+function updateClusterTable() {
+  const clusters = [
+    { name: '科技板块', sectors: 'IT服务, 软件开发, 计算机设备', corr: '0.95+', feature: '同涨同跌' },
+    { name: '高端制造', sectors: '专用设备, 通用设备, 自动化设备', corr: '0.93+', feature: '制造业周期联动' },
+    { name: '电子板块', sectors: '光学光电子, 消费电子, 元件', corr: '0.91+', feature: '电子产业供应链' },
+    { name: '医药板块', sectors: '化学制药, 生物制品, 医疗器械', corr: '0.89+', feature: '医疗健康主线' },
+    { name: '传媒板块', sectors: '文化传媒, 游戏, 影视院线', corr: '0.80+', feature: '消费娱乐联动' },
+    { name: '地产基建', sectors: '建筑装饰, 建筑材料, 房地产', corr: '0.80+', feature: '地产周期强相关' },
+  ];
+  const tbody = document.querySelector('#clusterTable tbody');
+  clusters.forEach(c => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${c.name}</td><td>${c.sectors}</td><td>${c.corr}</td><td>${c.feature}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function computeCycleData() {
+  // Compute cycle data for all sectors
+  cycleData = [];
+
+  const codes = Object.keys(timeSeriesData);
+  for (const code of codes) {
+    const data = timeSeriesData[code];
+    if (!data || data.values.length < 100) continue;
+
+    // Compute daily returns
+    const returns = [];
+    for (let i = 1; i < data.values.length; i++) {
+      returns.push(data.values[i] / data.values[i-1] - 1);
+    }
+
+    // Detect cycles using 5% threshold
+    const threshold = 0.05;
+    const cycles = [];
+    let inUp = returns[0] > threshold;
+    let upStart = 0;
+    let peak = inUp ? returns[0] : 0;
+    let trough = !inUp ? returns[0] : 0;
+    let peakIdx = inUp ? 0 : -1;
+    let troughIdx = !inUp ? 0 : -1;
+
+    for (let i = 1; i < returns.length; i++) {
+      if (inUp) {
+        if (returns[i] > threshold) {
+          if (returns[i] > peak) { peak = returns[i]; peakIdx = i; }
+        } else {
+          const duration = i - upStart;
+          const magnitude = (data.values[i] / data.values[upStart] - 1) * 100;
+          cycles.push({ type: 'up', startIdx: upStart, endIdx: i, duration, magnitude, avgDaily: magnitude / duration });
+          inUp = false;
+          upStart = i;
+          trough = returns[i];
+          troughIdx = i;
+        }
+      } else {
+        if (returns[i] < -threshold) {
+          if (returns[i] < trough) { trough = returns[i]; troughIdx = i; }
+        } else {
+          const duration = i - upStart;
+          const magnitude = Math.abs((data.values[i] / data.values[upStart] - 1) * 100);
+          cycles.push({ type: 'down', startIdx: upStart, endIdx: i, duration, magnitude, avgDaily: magnitude / duration });
+          inUp = true;
+          upStart = i;
+          peak = returns[i];
+          peakIdx = i;
+        }
+      }
+    }
+
+    const upCycles = cycles.filter(c => c.type === 'up');
+    const downCycles = cycles.filter(c => c.type === 'down');
+
+    cycleData.push({
+      name: code,
+      avgUp: upCycles.length > 0 ? upCycles.reduce((s, c) => s + c.duration, 0) / upCycles.length : 0,
+      avgDown: downCycles.length > 0 ? downCycles.reduce((s, c) => s + c.duration, 0) / downCycles.length : 0,
+      maxUp: upCycles.length > 0 ? Math.max(...upCycles.map(c => c.duration)) : 0,
+      maxDown: downCycles.length > 0 ? Math.max(...downCycles.map(c => c.duration)) : 0,
+      avgUpPct: upCycles.length > 0 ? upCycles.reduce((s, c) => s + c.magnitude, 0) / upCycles.length : 0,
+      avgDownPct: downCycles.length > 0 ? downCycles.reduce((s, c) => s + c.magnitude, 0) / downCycles.length : 0,
+      cycleCount: cycles.length
+    });
+  }
+}
+
+function updateCycleTable() {
+  if (!cycleData) return;
+
+  document.getElementById('cycleCount').textContent = cycleData.length;
+
+  // Sort data
+  const sorted = [...cycleData].sort((a, b) => {
+    let va = a[currentSortField];
+    let vb = b[currentSortField];
+    if (typeof va === 'string') {
+      return currentSortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    return currentSortDir === 'asc' ? va - vb : vb - va;
+  });
+
+  const tbody = document.querySelector('#cycleTable tbody');
+  tbody.innerHTML = '';
+
+  sorted.forEach(d => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${d.name}</td>
+      <td>${d.avgUp.toFixed(1)}天</td>
+      <td>${d.avgDown.toFixed(1)}天</td>
+      <td>${d.maxUp}天</td>
+      <td>${d.maxDown}天</td>
+      <td class="positive">+${d.avgUpPct.toFixed(1)}%</td>
+      <td class="negative">-${d.avgDownPct.toFixed(1)}%</td>
+      <td>${d.cycleCount}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // Update header sort indicators
+  document.querySelectorAll('#cycleTable th').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    if (th.dataset.sort === currentSortField) {
+      th.classList.add(currentSortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+    }
+  });
+}
+
+// Setup cycle table sorting
+document.querySelectorAll('#cycleTable th').forEach(th => {
+  th.onclick = () => {
+    const field = th.dataset.sort;
+    if (!field) return;
+    if (currentSortField === field) {
+      currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      currentSortField = field;
+      currentSortDir = 'desc';
+    }
+    updateCycleTable();
+  };
+});
+
+// Export CSV
+document.getElementById('exportCycles')?.addEventListener('click', () => {
+  if (!cycleData) return;
+  const headers = ['板块', '平均上涨天数', '平均下跌天数', '最大上涨天数', '最大下跌天数', '平均涨幅%', '平均跌幅%', '周期数'];
+  const rows = cycleData.map(d => [d.name, d.avgUp.toFixed(1), d.avgDown.toFixed(1), d.maxUp, d.maxDown, d.avgUpPct.toFixed(1), d.avgDownPct.toFixed(1), d.cycleCount]);
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'sector_cycles.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+init();
+</script>
+</body>
+</html>

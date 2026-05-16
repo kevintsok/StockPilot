@@ -200,6 +200,23 @@ def cmd_fetch_financials(args):
     print(f"Fetched financials for {len(written)} symbols.")
 
 
+def cmd_fetch_sectors(args):
+    # Lazy import to avoid triggering torch import chain
+    from .data import sector_fetcher
+    ensure_data_dir()
+    if args.update:
+        updated = sector_fetcher.update_sectors(base_dir=DATA_DIR)
+        print(f"Updated {len(updated)} sectors.")
+    else:
+        processed = sector_fetcher.fetch_all_sectors(
+            start_date=args.start,
+            category=args.category,
+            base_dir=DATA_DIR,
+            limit=args.limit,
+        )
+        print(f"Processed {len(processed)} sectors.")
+
+
 def cmd_render_dashboard(args):
     symbols = args.symbols or symbols_from_data_dir(DATA_DIR)
     lookbacks = [args.lookback_short, args.lookback_long]
@@ -586,6 +603,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_fin.add_argument("symbols", nargs="*", help="指定股票代码，不填则默认 data 目录下全部")
     p_fin.add_argument("--limit", type=int, default=None, help="只抓取前 N 只股票用于测试")
     p_fin.set_defaults(func=cmd_fetch_financials)
+
+    p_sector = sub.add_parser("fetch-sectors", help="抓取行业/概念板块日线数据")
+    p_sector.add_argument("--start", default="20180101", help="起始日期，默认为20180101")
+    p_sector.add_argument("--category", choices=["industry", "concept", "both"], default="both", help="板块类型: industry(行业) / concept(概念) / both(默认)")
+    p_sector.add_argument("--limit", type=int, default=None, help="每个类型最多抓取 N 个板块（用于测试）")
+    p_sector.add_argument("--update", action="store_true", help="增量更新已有板块的最新数据")
+    p_sector.set_defaults(func=cmd_fetch_sectors)
 
     p_dash = sub.add_parser("render-dashboard", help="生成可排序的价格+财务看板 HTML")
     p_dash.add_argument("symbols", nargs="*", help="指定股票代码，不填则默认 data 目录下全部")

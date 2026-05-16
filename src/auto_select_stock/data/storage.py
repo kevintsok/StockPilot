@@ -114,6 +114,32 @@ def _init_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chip_symbol_date ON chip(symbol,date)")
+    # Sector metadata: industry and concept boards (板块)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sector (
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            update_date TEXT,
+            PRIMARY KEY(code, category)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_category ON sector(category)")
+    # Sector daily OHLCV data
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sector_daily (
+            sector_code TEXT NOT NULL,
+            date TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL,
+            volume REAL, amount REAL, turnover_rate REAL, pct_change REAL,
+            PRIMARY KEY(sector_code, date)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sector_daily_code_date ON sector_daily(sector_code,date)")
     # Backfill new columns if table already existed
     for column_def in ["amplitude REAL", "change_amount REAL"]:
         try:
@@ -417,6 +443,99 @@ def chip_date_range(symbol: str, base_dir: Optional[Path] = None) -> Optional[Tu
     except FileNotFoundError:
         return None
     cur = conn.execute("SELECT MIN(date), MAX(date) FROM chip WHERE symbol=?", (symbol,))
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return pd.to_datetime(row[0]), pd.to_datetime(row[1])
+
+
+# ─── sector ──────────────────────────────────────────────────────────────────
+
+SECTOR_DAILY_COLS = ["date", "open", "high", "low", "close", "volume", "amount", "turnover_rate", "pct_change"]
+
+SECTOR_DAILY_SQL = """
+    INSERT INTO sector_daily(sector_code,date,open,high,low,close,volume,amount,turnover_rate,pct_change)
+    VALUES(:sector_code,:date,:open,:high,:low,:close,:volume,:amount,:turnover_rate,:pct_change)
+    ON CONFLICT(sector_code,date) DO UPDATE SET
+        open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,
+        volume=excluded.volume, amount=excluded.amount,
+        turnover_rate=excluded.turnover_rate, pct_change=excluded.pct_change
+"""
+
+
+def save_sector(code: str, name: str, category: str, base_dir: Optional[Path] = None) -> Path:
+    """Save or update sector metadata (行业/概念板块)."""
+    conn = _connect(base_dir)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO sector(code, name, category, update_date)
+            VALUES(?, ?, ?, date('now'))
+            ON CONFLICT(code, category) DO UPDATE SET
+                name=excluded.name, update_date=date('now')
+            """,
+            (code, name, category),
+        )
+    return (base_dir or DATA_DIR) / "stock.db"
+
+
+def save_sector_daily(sector_code: str, df: pd.DataFrame, base_dir: Optional[Path] = None) -> Path:
+    """Save sector daily OHLCV data."""
+    if df.empty:
+        return (base_dir or DATA_DIR) / "stock.db"
+    conn = _connect(base_dir)
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+    rows = [{**r, "sector_code": sector_code} for r in df.to_dict("records")]
+    with conn:
+        conn.executemany(SECTOR_DAILY_SQL, rows)
+    return (base_dir or DATA_DIR) / "stock.db"
+
+
+def load_sector_daily(sector_code: str, base_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Load sector daily data for a sector."""
+    conn = _connect(base_dir, read_only=True)
+    cols = ", ".join(SECTOR_DAILY_COLS[1:])
+    df = pd.read_sql_query(
+        f"SELECT date,{cols} FROM sector_daily WHERE sector_code=? ORDER BY date ASC",
+        conn, params=(sector_code,),
+    )
+    if df.empty:
+        raise FileNotFoundError(f"No sector daily data for {sector_code}")
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+
+def list_sectors(category: Optional[str] = None, base_dir: Optional[Path] = None) -> list[str]:
+    """List all sector codes, optionally filtered by category (industry/concept)."""
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return []
+    if category:
+        cur = conn.execute("SELECT code FROM sector WHERE category=?", (category,))
+    else:
+        cur = conn.execute("SELECT code FROM sector")
+    return [r[0] for r in cur.fetchall()]
+
+
+def list_all_sectors(base_dir: Optional[Path] = None) -> list[tuple[str, str, str]]:
+    """Return list of (code, name, category) tuples for all sectors."""
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return []
+    cur = conn.execute("SELECT code, name, category FROM sector ORDER BY category, name")
+    return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+
+def sector_date_range(sector_code: str, base_dir: Optional[Path] = None) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return min/max dates for sector daily data."""
+    try:
+        conn = _connect(base_dir, read_only=True)
+    except FileNotFoundError:
+        return None
+    cur = conn.execute("SELECT MIN(date), MAX(date) FROM sector_daily WHERE sector_code=?", (sector_code,))
     row = cur.fetchone()
     if not row or row[0] is None:
         return None

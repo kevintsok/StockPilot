@@ -26,6 +26,7 @@ from .dashboard import build_rows
 from ..data.fetcher import list_all_symbols
 from .screener import ScreenCriteria, parse_nl_query, screen_stocks
 from ..data.storage import DB_PATH, list_symbols, load_financial, load_stock_history
+from ..data.storage import list_all_sectors as _list_all_sectors, load_sector_daily as _load_sector_daily
 
 # Token for authentication (from env var)
 OPS_DASHBOARD_TOKEN = os.getenv("OPS_DASHBOARD_TOKEN", "")
@@ -830,3 +831,154 @@ def _wipe_dataset_cache() -> str:
         return "已删除数据集缓存目录"
     except Exception as exc:  # noqa: BLE001
         return f"删除数据集缓存失败: {exc}"
+
+
+# ─── Sector handlers ────────────────────────────────────────────────────────────────
+
+SECTOR_CACHE: Dict[str, object] = {"ts": 0.0, "data": None}
+
+
+def _sector_list() -> Dict[str, object]:
+    """
+    Return list of all sectors with latest performance data.
+    """
+    now = time.time()
+    if SECTOR_CACHE.get("data") is not None and now - float(SECTOR_CACHE.get("ts", 0.0)) < 300:
+        return SECTOR_CACHE["data"]  # type: ignore[return-value]
+
+    try:
+        sectors = _list_all_sectors()
+    except Exception:
+        sectors = []
+
+    result: List[Dict[str, object]] = []
+    for code, name, category in sectors:
+        try:
+            df = _load_sector_daily(code)
+            if df.empty:
+                continue
+            latest = df.iloc[-1]
+            # Compute recent momentum
+            if len(df) >= 20:
+                pct_20d = (latest["close"] - df.iloc[-20]["close"]) / df.iloc[-20]["close"] * 100 if df.iloc[-20]["close"] != 0 else 0
+            else:
+                pct_20d = None
+            if len(df) >= 60:
+                pct_60d = (latest["close"] - df.iloc[-60]["close"]) / df.iloc[-60]["close"] * 100 if df.iloc[-60]["close"] != 0 else 0
+            else:
+                pct_60d = None
+            result.append({
+                "code": code,
+                "name": name,
+                "category": category,
+                "date": str(latest["date"]) if hasattr(latest["date"], "strftime") else str(latest["date"]),
+                "close": _to_float(latest["close"]),
+                "pct_change": _to_float(latest["pct_change"]),
+                "turnover_rate": _to_float(latest.get("turnover_rate")),
+                "volume": _to_float(latest["volume"]),
+                "pct_20d": pct_20d,
+                "pct_60d": pct_60d,
+                "data_count": len(df),
+            })
+        except Exception:
+            continue
+
+    # Sort by pct_change descending
+    result.sort(key=lambda x: x.get("pct_change") or 0, reverse=True)
+    payload = {"sectors": result, "count": len(result), "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+    SECTOR_CACHE["ts"] = now
+    SECTOR_CACHE["data"] = payload
+    return payload
+
+
+def _sector_data(sector_code: str, start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, object]:
+    """
+    Return daily OHLCV data for a sector within the date range.
+    """
+    try:
+        df = _load_sector_daily(sector_code)
+    except FileNotFoundError:
+        return {"error": f"No data for sector {sector_code}", "data": []}
+
+    if start:
+        df = df[df["date"] >= pd.to_datetime(start)]
+    if end:
+        df = df[df["date"] <= pd.to_datetime(end)]
+
+    df = df.sort_values("date")
+    data: List[Dict[str, object]] = []
+    for _, row in df.iterrows():
+        data.append({
+            "date": str(row["date"]) if hasattr(row["date"], "strftime") else str(row["date"]),
+            "open": _to_float(row["open"]),
+            "high": _to_float(row["high"]),
+            "low": _to_float(row["low"]),
+            "close": _to_float(row["close"]),
+            "volume": _to_float(row["volume"]),
+            "amount": _to_float(row.get("amount")),
+            "turnover_rate": _to_float(row.get("turnover_rate")),
+            "pct_change": _to_float(row["pct_change"]),
+        })
+
+    return {
+        "code": sector_code,
+        "data": data,
+        "count": len(data),
+        "start": start,
+        "end": end,
+    }
+
+
+def _sector_compare(sector_codes: List[str], start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, object]:
+    """
+    Return normalized performance data for multiple sectors for comparison.
+    Base value is the first available close price in the range.
+    """
+    result: Dict[str, object] = {"sectors": [], "data": {}}
+
+    for code in sector_codes:
+        try:
+            df = _load_sector_daily(code)
+        except FileNotFoundError:
+            continue
+
+        if start:
+            df = df[df["date"] >= pd.to_datetime(start)]
+        if end:
+            df = df[df["date"] <= pd.to_datetime(end)]
+
+        df = df.sort_values("date")
+        if df.empty:
+            continue
+
+        # Normalize to start from 100
+        base_close = df.iloc[0]["close"]
+        if base_close == 0:
+            continue
+
+        dates: List[str] = []
+        normalized: List[float] = []
+        for _, row in df.iterrows():
+            dates.append(str(row["date"]) if hasattr(row["date"], "strftime") else str(row["date"]))
+            normalized.append(float(row["close"]) / float(base_close) * 100)
+
+        result["sectors"].append({"code": code, "name": code})  # name same as code for now
+        result["data"][code] = {"dates": dates, "values": normalized}
+
+    # Build aligned timeline
+    all_dates: set = set()
+    for code, d in result["data"].items():
+        all_dates.update(d["dates"])
+
+    sorted_dates = sorted(all_dates)
+    result["timeline"] = sorted_dates
+
+    # Re-index each sector to full timeline (forward fill)
+    for code, d in result["data"].items():
+        date_to_val = dict(zip(d["dates"], d["values"]))
+        result["data"][code] = {
+            "dates": sorted_dates,
+            "values": [date_to_val.get(d, None) for d in sorted_dates],
+        }
+
+    return result

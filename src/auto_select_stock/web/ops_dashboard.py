@@ -153,6 +153,88 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path.startswith("/screener"):
             self._write_ok(_load_template("ops_screener.html").encode("utf-8"), "text/html; charset=utf-8")
             return
+        if path.startswith("/sector-rotation"):
+            self._write_ok(_load_template("ops_sector_rotation.html").encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path.startswith("/sector-list"):
+            import json
+            try:
+                from .ops_handlers import _sector_list
+                payload = _sector_list()
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self._write_ok(body, "application/json; charset=utf-8")
+            except Exception as exc:
+                err = f"failed to load sector list: {exc}"
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, err)
+            return
+        if path.startswith("/sector-data"):
+            import json
+            qs = parse_qs(query)
+            sector = (qs.get("sector") or [""])[0].strip()
+            start = (qs.get("start") or [None])[0]
+            end = (qs.get("end") or [None])[0]
+            if not sector:
+                self.send_error(HTTPStatus.BAD_REQUEST, "missing sector")
+                return
+            try:
+                from .ops_handlers import _sector_data
+                payload = _sector_data(sector, start, end)
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self._write_ok(body, "application/json; charset=utf-8")
+            except Exception as exc:
+                err = f"failed to load sector data: {exc}"
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, err)
+            return
+        if path.startswith("/sector-compare"):
+            import json
+            qs = parse_qs(query)
+            sectors_param = (qs.get("sectors") or [""])[0].strip()
+            sectors = [s for s in sectors_param.replace(",", " ").split() if s]
+            start = (qs.get("start") or [None])[0]
+            end = (qs.get("end") or [None])[0]
+            if not sectors:
+                self.send_error(HTTPStatus.BAD_REQUEST, "missing sectors")
+                return
+            try:
+                from .ops_handlers import _sector_compare
+                payload = _sector_compare(sectors, start, end)
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self._write_ok(body, "application/json; charset=utf-8")
+            except Exception as exc:
+                err = f"failed to load sector compare: {exc}"
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, err)
+            return
+        if path.startswith("/sector-analysis"):
+            import json
+            qs = parse_qs(query)
+            analysis_type = (qs.get("type") or ["correlation"])[0].strip()
+            sectors_param = (qs.get("sectors") or [""])[0].strip()
+            sectors = [s for s in sectors_param.replace(",", " ").split() if s]
+            sector = (qs.get("sector") or [""])[0].strip()
+            start = (qs.get("start") or [None])[0]
+            end = (qs.get("end") or [None])[0]
+            try:
+                # Import analysis functions directly to avoid circular imports
+                import auto_select_stock.data.sector_analysis as sector_analysis
+                if analysis_type == "correlation":
+                    payload = sector_analysis.compute_correlation_matrix(sectors, start, end)
+                elif analysis_type == "cycles":
+                    if not sector:
+                        self.send_error(HTTPStatus.BAD_REQUEST, "missing sector for cycles analysis")
+                        return
+                    payload = sector_analysis.cycle_statistics(sector)
+                elif analysis_type == "momentum":
+                    lookback = int((qs.get("lookback") or ["20"])[0])
+                    payload = {"momentum": sector_analysis.rank_sectors_by_momentum(sectors or None, lookback_days=lookback)}
+                else:
+                    self.send_error(HTTPStatus.BAD_REQUEST, f"unknown analysis type: {analysis_type}")
+                    return
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self._write_ok(body, "application/json; charset=utf-8")
+            except Exception as exc:
+                err = f"failed to run sector analysis: {exc}"
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, err)
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self):

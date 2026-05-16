@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>板块轮动监控</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <style>
+    body { margin:0; padding:16px; font-family:"Inter","Arial",sans-serif; background:#0b1221; color:#e2e8f0; }
+    h1 { margin:0 0 12px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; box-shadow:0 10px 40px rgba(0,0,0,0.35); margin-bottom:16px; }
+    .meta { color:#94a3b8; font-size:13px; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
+    .pill { padding:6px 10px; border-radius:10px; border:1px solid #1f2937; background:#0f172a; color:#e2e8f0; font-size:13px; }
+    .pill input { margin-right:6px; }
+    .pill label { cursor:pointer; }
+    .btn { padding:8px 12px; border-radius:10px; border:1px solid #2563eb; background:#2563eb; color:#e2e8f0; cursor:pointer; font-weight:600; }
+    .btn:hover { background:#1d4ed8; }
+    .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .time-btn { padding:6px 12px; border-radius:8px; border:1px solid #1f2937; background:#0f172a; color:#94a3b8; cursor:pointer; font-size:12px; }
+    .time-btn:hover { border-color:#2563eb; color:#e2e8f0; }
+    .time-btn.active { background:#2563eb; border-color:#2563eb; color:#fff; }
+    .layout { display:grid; grid-template-columns:280px 1fr; gap:16px; min-height:calc(100vh - 140px); }
+    .sidebar { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:12px; overflow-y:auto; max-height:calc(100vh - 160px); }
+    .sidebar h3 { margin:0 0 8px; font-size:14px; color:#94a3b8; }
+    .sidebar-section { margin-bottom:16px; }
+    .chart-wrap { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; }
+    .chart-container { position:relative; height:400px; }
+    canvas { max-width:100%; }
+    .table-wrap { max-height:300px; overflow:auto; border-radius:10px; border:1px solid #1f2937; margin-top:12px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid #1f2937; text-align:right; }
+    th { cursor:pointer; color:#93c5fd; position:sticky; top:0; background:#0f172a; font-size:12px; }
+    th:first-child, td:first-child { text-align:left; }
+    tr:hover { background:rgba(59,130,246,0.1); }
+    .pos { color:#ef4444; }
+    .neg { color:#22c55e; }
+    .zero { color:#e2e8f0; }
+    .badge { display:inline-block; padding:2px 6px; border-radius:4px; background:#1f2937; font-size:11px; margin-left:4px; }
+    .badge.industry { background:#1e3a5f; }
+    .badge.concept { background:#3b1e5f; }
+    .status { margin-left:8px; }
+    .loading { color:#94a3b8; font-size:13px; }
+    .error { color:#ef4444; font-size:13px; }
+    .zoom-controls { display:flex; gap:4px; margin-bottom:8px; }
+    .zoom-btn { padding:4px 8px; border-radius:6px; border:1px solid #1f2937; background:#0f172a; color:#94a3b8; cursor:pointer; font-size:11px; }
+    .zoom-btn:hover { border-color:#2563eb; color:#e2e8f0; }
+    .metrics-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; margin-top:12px; }
+    .metric-card { background:#0f172a; border:1px solid #1f2937; border-radius:8px; padding:12px; }
+    .metric-label { font-size:11px; color:#94a3b8; margin-bottom:4px; }
+    .metric-value { font-size:18px; font-weight:600; }
+    .category-tabs { display:flex; gap:4px; margin-bottom:12px; }
+    .category-tab { padding:6px 12px; border-radius:8px; border:1px solid #1f2937; background:#0f172a; color:#94a3b8; cursor:pointer; font-size:12px; }
+    .category-tab.active { background:#2563eb; border-color:#2563eb; color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>板块轮动监控</h1>
+    <div class="controls">
+      <button class="btn" onclick="loadSectorList()">刷新板块</button>
+      <button class="btn" onclick="loadComparison()">加载对比</button>
+      <span class="meta status" id="status">加载中...</span>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="category-tabs">
+        <button class="category-tab active" onclick="filterCategory('all')">全部</button>
+        <button class="category-tab" onclick="filterCategory('industry')">行业</button>
+        <button class="category-tab" onclick="filterCategory('concept')">概念</button>
+      </div>
+      <div class="sidebar-section">
+        <h3>选择板块 (最多10个)</h3>
+        <div id="sector-filters"></div>
+      </div>
+      <div class="sidebar-section">
+        <h3>时间范围</h3>
+        <div class="controls" style="flex-wrap:wrap;">
+          <button class="time-btn" onclick="setTimeRange('1M')">1月</button>
+          <button class="time-btn" onclick="setTimeRange('3M')">3月</button>
+          <button class="time-btn" onclick="setTimeRange('6M')">6月</button>
+          <button class="time-btn" onclick="setTimeRange('YTD')">今年</button>
+          <button class="time-btn" onclick="setTimeRange('1Y')">1年</button>
+          <button class="time-btn" onclick="setTimeRange('3Y')">3年</button>
+          <button class="time-btn" onclick="setTimeRange('5Y')">5年</button>
+          <button class="time-btn" onclick="setTimeRange('ALL')">全部</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <h3>分析功能</h3>
+        <div class="controls" style="flex-direction:column; align-items:flex-start;">
+          <button class="btn" style="width:100%; margin-bottom:4px;" onclick="showCorrelation()">板块相关性</button>
+          <button class="btn" style="width:100%;" onclick="showCycleAnalysis()">周期分析</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="chart-wrap">
+        <div class="zoom-controls">
+          <button class="zoom-btn" onclick="chart.zoomOut()">缩小</button>
+          <button class="zoom-btn" onclick="chart.zoomIn()">放大</button>
+          <button class="zoom-btn" onclick="chart.resetZoom()">重置缩放</button>
+        </div>
+        <div class="chart-container">
+          <canvas id="sector-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <h3 style="margin:0 0 8px;">板块动量排名</h3>
+        <div class="controls">
+          <button class="time-btn" onclick="loadMomentum(20)">20日</button>
+          <button class="time-btn" onclick="loadMomentum(60)">60日</button>
+          <button class="time-btn" onclick="loadMomentum(120)">120日</button>
+        </div>
+        <div class="table-wrap" id="momentum-table"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <h3 style="margin:0 0 8px;">板块统计</h3>
+        <div class="metrics-grid" id="stats-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let chart = null;
+    let allSectors = [];
+    let selectedSectors = new Set();
+    let currentTimeRange = '3M';
+    let filteredSectors = [];
+    let sectorData = {};  // code -> {dates, values}
+
+    const COLORS = [
+      '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6',
+      '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef', '#ec4899'
+    ];
+
+    function format(val) {
+      if (val === null || val === undefined || Number.isNaN(val)) return '-';
+      if (typeof val === 'number') return val.toFixed(2);
+      return val;
+    }
+
+    function formatDate(str) {
+      if (!str) return '';
+      return str.substring(0, 10);
+    }
+
+    async function loadSectorList() {
+      const status = document.getElementById('status');
+      status.textContent = '加载板块列表...';
+      try {
+        const resp = await fetch('/sector-list');
+        if (!resp.ok) throw new Error(await resp.text());
+        const payload = await resp.json();
+        allSectors = payload.sectors || [];
+        filteredSectors = allSectors;
+        status.textContent = `已加载 ${allSectors.length} 个板块`;
+        status.style.color = '#86efac';
+        renderSectorFilters();
+      } catch (e) {
+        status.textContent = '加载失败: ' + e;
+        status.style.color = '#ef4444';
+      }
+    }
+
+    function filterCategory(cat) {
+      document.querySelectorAll('.category-tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+      if (cat === 'all') {
+        filteredSectors = allSectors;
+      } else {
+        filteredSectors = allSectors.filter(s => s.category === cat);
+      }
+      renderSectorFilters();
+    }
+
+    function renderSectorFilters() {
+      const container = document.getElementById('sector-filters');
+      container.innerHTML = '';
+      filteredSectors.slice(0, 50).forEach(sector => {
+        const label = document.createElement('label');
+        label.className = 'pill';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selectedSectors.has(sector.code);
+        cb.onchange = () => {
+          if (cb.checked) {
+            selectedSectors.add(sector.code);
+          } else {
+            selectedSectors.delete(sector.code);
+          }
+          if (selectedSectors.size > 0) {
+            loadComparison();
+          }
+        };
+        label.appendChild(cb);
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + sector.category;
+        badge.textContent = sector.category === 'industry' ? '行' : '概';
+        label.appendChild(badge);
+        label.append(' ' + sector.code);
+        container.appendChild(label);
+      });
+    }
+
+    function setTimeRange(range) {
+      currentTimeRange = range;
+      document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      if (selectedSectors.size > 0) {
+        loadComparison();
+      }
+    }
+
+    function getDateRange() {
+      const end = new Date();
+      let start = new Date();
+      start.setHours(0, 0, 0, 0);
+
+      switch (currentTimeRange) {
+        case '1M': start.setMonth(start.getMonth() - 1); break;
+        case '3M': start.setMonth(start.getMonth() - 3); break;
+        case '6M': start.setMonth(start.getMonth() - 6); break;
+        case 'YTD': start = new Date(end.getFullYear(), 0, 1); break;
+        case '1Y': start.setFullYear(start.getFullYear() - 1); break;
+        case '3Y': start.setFullYear(start.getFullYear() - 3); break;
+        case '5Y': start.setFullYear(start.getFullYear() - 5); break;
+        case 'ALL': start = new Date(2018, 0, 1); break;
+      }
+
+      return {
+        start: start.toISOString().substring(0, 10),
+        end: end.toISOString().substring(0, 10)
+      };
+    }
+
+    async function loadComparison() {
+      if (selectedSectors.size === 0) return;
+
+      const status = document.getElementById('status');
+      status.textContent = '加载对比数据...';
+      const { start, end } = getDateRange();
+      const sectorsParam = Array.from(selectedSectors).join(',');
+
+      try {
+        const resp = await fetch(`/sector-compare?sectors=${encodeURIComponent(sectorsParam)}&start=${start}&end=${end}`);
+        if (!resp.ok) throw new Error(await resp.text());
+        const payload = await resp.json();
+
+        sectorData = payload.data || {};
+        renderChart(payload);
+        renderStatsGrid();
+        status.textContent = `已加载 ${selectedSectors.size} 个板块 (${start} ~ ${end})`;
+        status.style.color = '#86efac';
+      } catch (e) {
+        status.textContent = '加载失败: ' + e;
+        status.style.color = '#ef4444';
+      }
+    }
+
+    function renderChart(payload) {
+      const ctx = document.getElementById('sector-chart').getContext('2d');
+      const timeline = payload.timeline || [];
+
+      const datasets = [];
+      let colorIdx = 0;
+      for (const code of Object.keys(sectorData)) {
+        const d = sectorData[code];
+        const values = [];
+        for (let i = 0; i < timeline.length; i++) {
+          values.push(d.values[i]);
+        }
+
+        datasets.push({
+          label: code,
+          data: values,
+          borderColor: COLORS[colorIdx % COLORS.length],
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.1,
+          fill: false,
+        });
+        colorIdx++;
+      }
+
+      if (chart) {
+        chart.destroy();
+      }
+
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: timeline.map(t => t.substring(0, 10)),
+          datasets: datasets
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: { color: '#94a3b8', maxTicksLimit: 12 },
+            },
+            y: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: { color: '#94a3b8' },
+              title: { display: true, text: '相对起点 (%)', color: '#94a3b8' },
+            }
+          },
+          plugins: {
+            legend: {
+              labels: { color: '#e2e8f0' },
+              onClick: (e, legendItem, legend) => {
+                const index = legendItem.datasetIndex;
+                const ci = legend.chart;
+                const meta = ci.getDatasetMeta(index);
+                meta.hidden = !meta.hidden;
+                ci.update();
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '-'}`,
+              }
+            },
+            zoom: {
+              pan: {
+                enabled: true,
+                mode: 'x',
+              },
+              zoom: {
+                wheel: { enabled: true },
+                pinch: { enabled: true },
+                mode: 'x',
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderStatsGrid() {
+      const grid = document.getElementById('stats-grid');
+      grid.innerHTML = '';
+
+      const codes = Object.keys(sectorData);
+      codes.forEach(code => {
+        const d = sectorData[code];
+        const values = d.values.filter(v => v !== null);
+        if (values.length === 0) return;
+
+        const current = values[values.length - 1];
+        const start = values[0];
+        const change = current - start;
+        const high = Math.max(...values);
+        const low = Math.min(...values.filter(v => v !== null));
+
+        const card = document.createElement('div');
+        card.className = 'metric-card';
+        card.innerHTML = `
+          <div class="metric-label">${code}</div>
+          <div class="metric-value ${change >= 0 ? 'pos' : 'neg'}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
+          <div class="meta">高点: ${high.toFixed(2)} | 低点: ${low.toFixed(2)}</div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    async function loadMomentum(lookback) {
+      const container = document.getElementById('momentum-table');
+      container.innerHTML = '<div class="loading">加载中...</div>';
+
+      try {
+        const resp = await fetch(`/sector-analysis?type=momentum&lookback=${lookback}`);
+        if (!resp.ok) throw new Error(await resp.text());
+        const payload = await resp.json();
+        const data = payload.momentum || [];
+
+        if (data.length === 0) {
+          container.innerHTML = '<div class="meta">暂无数据</div>';
+          return;
+        }
+
+        let html = '<table><thead><tr><th>板块</th><th>最新收盘</th><th>' + lookback + '日涨跌</th><th>60日涨跌</th></tr></thead><tbody>';
+        data.slice(0, 30).forEach(row => {
+          const momClass = row.momentum >= 0 ? 'pos' : 'neg';
+          const mom60Class = row.momentum_60d >= 0 ? 'pos' : 'neg';
+          html += `<tr>
+            <td>${row.code}</td>
+            <td>${format(row.current_close)}</td>
+            <td class="${momClass}">${row.momentum >= 0 ? '+' : ''}${format(row.momentum)}%</td>
+            <td class="${mom60Class}">${row.momentum_60d != null ? (row.momentum_60d >= 0 ? '+' : '') + format(row.momentum_60d) + '%' : '-'}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = '<div class="error">加载失败: ' + e + '</div>';
+      }
+    }
+
+    async function showCorrelation() {
+      if (selectedSectors.size < 2) {
+        alert('请先选择至少2个板块进行相关性分析');
+        return;
+      }
+
+      const { start, end } = getDateRange();
+      const sectorsParam = Array.from(selectedSectors).join(',');
+      const status = document.getElementById('status');
+      status.textContent = '计算相关性...';
+
+      try {
+        const resp = await fetch(`/sector-analysis?type=correlation&sectors=${encodeURIComponent(sectorsParam)}&start=${start}&end=${end}`);
+        if (!resp.ok) throw new Error(await resp.text());
+        const payload = await resp.json();
+
+        const sectors = payload.sectors || [];
+        const corr = payload.correlation || [];
+
+        let html = '<div class="card"><h3 style="margin:0 0 12px;">板块相关性矩阵</h3>';
+        html += '<div class="table-wrap"><table><thead><tr><th>板块</th>';
+        sectors.forEach(s => { html += `<th>${s.substring(0, 8)}</th>`; });
+        html += '</tr></thead><tbody>';
+
+        for (let i = 0; i < sectors.length; i++) {
+          html += `<tr><td>${sectors[i]}</td>`;
+          for (let j = 0; j < sectors.length; j++) {
+            const val = corr[i] ? corr[i][j] : 0;
+            const color = val > 0 ? `rgba(34,197,94,${Math.abs(val)})` : `rgba(239,68,68,${Math.abs(val)})`;
+            html += `<td style="background:${color};color:#fff;">${val.toFixed(2)}</td>`;
+          }
+          html += '</tr>';
+        }
+        html += '</tbody></table></div></div>';
+
+        // Show in modal
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.style.display = 'flex';
+        modal.onclick = () => modal.remove();
+        modal.innerHTML = `<div class="modal" onclick="event.stopPropagation()">${html}<button class="btn" onclick="this.closest('.modal-overlay').remove()">关闭</button></div>`;
+        document.body.appendChild(modal);
+
+        status.textContent = '相关性计算完成';
+        status.style.color = '#86efac';
+      } catch (e) {
+        status.textContent = '相关性计算失败: ' + e;
+        status.style.color = '#ef4444';
+      }
+    }
+
+    async function showCycleAnalysis() {
+      if (selectedSectors.size !== 1) {
+        alert('请先选择一个板块进行周期分析');
+        return;
+      }
+
+      const sectorCode = Array.from(selectedSectors)[0];
+      const status = document.getElementById('status');
+      status.textContent = '分析周期...';
+
+      try {
+        const resp = await fetch(`/sector-analysis?type=cycles&sector=${encodeURIComponent(sectorCode)}`);
+        if (!resp.ok) throw new Error(await resp.text());
+        const payload = await resp.json();
+
+        let html = `<div class="card"><h3 style="margin:0 0 12px;">板块周期分析: ${sectorCode}</h3>`;
+        html += '<div class="metrics-grid">';
+        html += `<div class="metric-card"><div class="metric-label">周期数量</div><div class="metric-value">${payload.cycle_count || 0}</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">上涨周期</div><div class="metric-value pos">${payload.up_cycles || 0}</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">下跌周期</div><div class="metric-value neg">${payload.down_cycles || 0}</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">平均上涨持续</div><div class="metric-value">${payload.avg_up_duration_months || '-'} 月</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">平均下跌持续</div><div class="metric-value">${payload.avg_down_duration_months || '-'} 月</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">平均上涨幅度</div><div class="metric-value pos">${payload.avg_up_return ? payload.avg_up_return.toFixed(1) + '%' : '-'}</div></div>`;
+        html += `<div class="metric-card"><div class="metric-label">平均下跌幅度</div><div class="metric-value neg">${payload.avg_down_return ? payload.avg_down_return.toFixed(1) + '%' : '-'}</div></div>`;
+        html += '</div></div>';
+
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.style.display = 'flex';
+        modal.onclick = () => modal.remove();
+        modal.innerHTML = `<div class="modal" onclick="event.stopPropagation()" style="max-width:600px;">${html}<button class="btn" onclick="this.closest('.modal-overlay').remove()">关闭</button></div>`;
+        document.body.appendChild(modal);
+
+        status.textContent = '周期分析完成';
+        status.style.color = '#86efac';
+      } catch (e) {
+        status.textContent = '周期分析失败: ' + e;
+        status.style.color = '#ef4444';
+      }
+    }
+
+    // Initialize
+    loadSectorList();
+    loadMomentum(20);
+  </script>
+</body>
+</html>
