@@ -438,9 +438,68 @@ src/auto_select_stock/
     ├── ops_handlers.py     # Handler functions for ops actions
     ├── html_report.py      # HTML report generation
     ├── screener.py         # Stock screening logic
-    ├── scoring.py          # LLM scoring integration
-    └── templates/
-        └── ops_sector_rotation.html  # Sector rotation interactive dashboard
+
+    ├─ scoring.py          # LLM scoring integration
+    └─ templates/
+        └─ ops_sector_rotation.html  # Sector rotation interactive dashboard
+
+└─ rl/
+    ├─ bc_pretrain_trainer.py  # Behavior Cloning (BC) - 模仿学习
+    ├─ bc_rl_finetune.py       # BC + RL Fine-tuning 实验
+    ├─ rrl_sharpe_trainer.py   # RRL Direct Sharpe 优化
+    ├─ sac_pt_trainer.py       # SAC + PriceTransformer
+    └─ e2e_transformer.py       # End-to-End Transformer
+```
+
+---
+
+## RL Module: Behavior Cloning (BC)
+
+StockPilot includes an experimental RL module for learning trading policies directly from data.
+
+### BC Model (推荐)
+
+**Behavior Cloning** is a supervised approach that learns to mimic expert trading rules.
+
+```bash
+# WSL GPU训练 (使用WSL Ubuntu fin环境)
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin && cd /mnt/d/Projects/auto-select-stock && PYTHONPATH=./src python -m auto_select_stock.rl.bc_pretrain_trainer --mode train"
+
+# Backtest
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin && cd /mnt/d/Projects/auto-select-stock && PYTHONPATH=./src python -m auto_select_stock.rl.bc_pretrain_trainer --mode backtest --checkpoint models/bc_pretrain.pt"
+```
+
+**BC Results** (2024-01-01 ~ 2025-12-31):
+- Total Return: **+56.39%**
+- Sharpe Ratio: 17.5
+- Trade Count: 2,053
+- Avg Position: 4.32%
+
+See [`docs/rl_bc_model.md`](docs/rl_bc_model.md) for detailed explanation.
+
+### RL Approaches Tried
+
+| Approach | Description | Result |
+|----------|-------------|--------|
+| **BC (Behavior Cloning)** | 模仿专家规则 | **+56%** (推荐) |
+| RRL Direct Sharpe | RRL + 微分Sharpe | -8% (未收敛) |
+| SAC + PT | SAC + PriceTransformer reward | 崩溃 |
+| BC + RL Fine-tune | BC预训练 + RL微调 | -38% (灾难性遗忘) |
+
+**Key insight**: BC works well because it uses a simple, stable supervised learning approach. The RL approaches (RRL, SAC) suffer from:
+- High variance in reward signals
+- Non-differentiable trading environment
+- Distribution shift between training and testing
+
+### Training Environment
+
+```bash
+# WSL fin environment with GPU
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin"
+
+# Check GPU
+nvidia-smi
+
 ```
 
 ---

@@ -347,6 +347,56 @@ src/auto_select_stock/
 
 ---
 
+## RL模块: 模仿学习 (BC)
+
+StockPilot包含一个实验性的RL模块，用于直接从数据学习交易策略。
+
+### BC模型 (推荐)
+
+**Behavior Cloning** 是一种模仿学习方法，通过学习专家交易规则的轨迹来实现智能交易。
+
+```bash
+# WSL GPU训练 (使用WSL Ubuntu fin环境)
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin && cd /mnt/d/Projects/auto-select-stock && PYTHONPATH=./src python -m auto_select_stock.rl.bc_pretrain_trainer --mode train"
+
+# 回测
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin && cd /mnt/d/Projects/auto-select-stock && PYTHONPATH=./src python -m auto_select_stock.rl.bc_pretrain_trainer --mode backtest --checkpoint models/bc_pretrain.pt"
+```
+
+**BC结果** (2024-01-01 ~ 2025-12-31):
+- 总收益: **+56.39%**
+- 夏普比率: 17.5
+- 交易次数: 2,053
+- 平均持仓: 4.32%
+
+详细说明见 [`rl_bc_model.md`](rl_bc_model.md)。
+
+### 尝试过的RL方法
+
+| 方法 | 描述 | 结果 |
+|------|------|------|
+| **BC (模仿学习)** | 模仿专家规则 | **+56%** (推荐) |
+| RRL Direct Sharpe | RRL + 微分Sharpe优化 | -8% (未收敛) |
+| SAC + PT | SAC + PriceTransformer奖励 | 崩溃 |
+| BC + RL微调 | BC预训练 + RL微调 | -38% (灾难性遗忘) |
+
+**关键发现**: BC效果好因为使用了简单稳定的监督学习方法。RL方法（RRL, SAC）效果差因为：
+- 奖励信号方差大
+- 交易环境不可微
+- 训练和测试分布偏移
+
+### 训练环境
+
+```bash
+# WSL fin 环境 + GPU
+wsl -e bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate fin"
+
+# 检查GPU
+nvidia-smi
+```
+
+---
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
