@@ -168,21 +168,31 @@ def main():
     filtered = [r for r in results if r[1] >= 0.05]
     top5 = filtered[:5]
 
+    # Get stock names
+    import akshare as ak
+    try:
+        name_df = ak.stock_info_a_code_name()
+        name_map = dict(zip(name_df['code'], name_df['name']))
+    except Exception:
+        name_map = {}
+
     print(f"\n{'='*60}")
     print("BC Model Top-5 Recommendations")
     print(f"{'='*60}")
     for i, (sym, score, price) in enumerate(top5):
-        print(f"{i+1}. {sym} | Score: {score:.4f} | Price: {price:.2f}")
+        name = name_map.get(sym, "")
+        print(f"{i+1}. {sym} {name} | Score: {score:.4f} | Price: {price:.2f}")
 
     # Generate HTML
     html = f"""<h2>BC Model 明日荐股 (Top-5)</h2>
 <p><b>生成时间</b>: {datetime.date.today().isoformat()}</p>
 <p><b>数据最新日期</b>: {latest_date}</p>
 <table border="1" cellpadding="5" cellspacing="0">
-<tr><th>排名</th><th>股票代码</th><th>评分</th><th>当前价格</th></tr>
+<tr><th>排名</th><th>股票代码</th><th>股票名称</th><th>评分</th><th>当前价格</th></tr>
 """
     for i, (sym, score, price) in enumerate(top5):
-        html += f"<tr><td>{i+1}</td><td><b>{sym}</b></td><td>{score:.4f}</td><td>{price:.2f}</td></tr>\n"
+        name = name_map.get(sym, "")
+        html += f"<tr><td>{i+1}</td><td><b>{sym}</b></td><td>{name}</td><td>{score:.4f}</td><td>{price:.2f}</td></tr>\n"
     html += """</table>
 <p><b>说明</b>:</p>
 <ul>
