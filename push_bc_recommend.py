@@ -158,7 +158,7 @@ def main():
             state_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
                 action = model(state_t).item()
-            current_price = arr_out[t, 3]
+            current_price = arr_out[-1, 3]  # Use latest price (last row)
             results.append((sym, action, current_price))
         except Exception:
             continue
