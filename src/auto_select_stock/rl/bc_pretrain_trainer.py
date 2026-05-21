@@ -447,12 +447,12 @@ def train_bc_pretrain():
 
 def backtest_bc(checkpoint_path: str = None):
     """Backtest the BC-pretrained model."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cpu')  # Force CPU for this GPU
 
     # Load model
     if checkpoint_path and Path(checkpoint_path).exists():
         model = BCNetwork(input_dim=6, hidden_dim=128).to(device)
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
         model.eval()
         print(f"Loaded model from {checkpoint_path}")
     else:

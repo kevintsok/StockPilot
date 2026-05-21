@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-Backtest for E2E v3 (continuous output).
-
-Uses the trained ContinuousE2E model to generate trading decisions.
+Backtest for E2E v3 with BC Warm-Start.
 """
 import sys
 sys.path.insert(0, 'src')
 
-import random
 from pathlib import Path
-
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -17,50 +13,7 @@ from tqdm import tqdm
 from auto_select_stock.config import DATA_DIR
 from auto_select_stock.data.storage import list_symbols, load_stock_history
 from auto_select_stock.predict.data import compute_technical_indicators, PRICE_FEATURE_COLUMNS
-
-
-class ContinuousE2E(torch.nn.Module):
-    """E2E v3 model (same as train_e2e_v3.py)."""
-
-    def __init__(self, feature_dim=25, seq_len=60, d_model=128, nhead=4,
-                 num_layers=4, dim_feedforward=256, dropout=0.1, max_position_pct=0.15):
-        super().__init__()
-        self.max_position_pct = max_position_pct
-
-        self.price_proj = torch.nn.Linear(feature_dim, d_model)
-        self.price_ln = torch.nn.LayerNorm(d_model)
-        from auto_select_stock.core.torch_model import PositionalEncoding
-        self.price_pe = PositionalEncoding(d_model=d_model, dropout=dropout)
-
-        encoder_layer = torch.nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
-            dropout=dropout, batch_first=False)
-        self.price_encoder = torch.nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        self.head = torch.nn.Sequential(
-            torch.nn.Linear(d_model, d_model),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Linear(d_model, 1),
-        )
-        self._cached_mask = None
-
-    def _causal_mask(self, seq_len, device):
-        if self._cached_mask is None or self._cached_mask.size(0) != seq_len or self._cached_mask.device != device:
-            mask = torch.full((seq_len, seq_len), float("-inf"), device=device)
-            mask = torch.triu(mask, diagonal=1)
-            self._cached_mask = mask
-        return self._cached_mask
-
-    def forward(self, price_seq):
-        x = self.price_proj(price_seq)
-        x = self.price_ln(x)
-        x = x.transpose(0, 1)
-        x = self.price_pe(x)
-        mask = self._causal_mask(x.size(0), x.device)
-        x = self.price_encoder(x, mask=mask)
-        x = x[-1]
-        return torch.sigmoid(self.head(x)) * self.max_position_pct
+from .train_e2e_v3_bc_warmup import ContinuousE2EWithBCWarmup
 
 
 def load_stock_data(symbols, start_date="2024-01-01"):
@@ -106,17 +59,20 @@ def load_stock_data(symbols, start_date="2024-01-01"):
     return sequences
 
 
-def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=250):
+def backtest_e2e_v3_bc_warmup(checkpoint_path, bc_pretrained_path, test_symbols_start=200, test_symbols_end=250):
     """Run backtest on test symbols."""
-    device = "cpu"  # Force CPU for this GPU
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if not Path(checkpoint_path).exists():
         print(f"Checkpoint not found: {checkpoint_path}")
         return
 
     # Load model
-    model = ContinuousE2E(feature_dim=25, seq_len=60, d_model=128, nhead=4, num_layers=4).to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+    model = ContinuousE2EWithBCWarmup(
+        bc_pretrained_path=bc_pretrained_path,
+        feature_dim=25, seq_len=60, d_model=128, nhead=4, num_layers=4
+    ).to(device)
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
 
@@ -131,8 +87,7 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
         print("No data loaded!")
         return
 
-    # Trading parameters
-    trade_threshold = 0.05  # Only trade when model output > this
+    trade_threshold = 0.05
     commission = 0.0003
     stamp_tax = 0.001
     slippage = 0.0001
@@ -151,7 +106,6 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
         entry_price = 0.0
 
         for t in range(60, len(arr) - 1):
-            # Get model prediction
             window = arr[t - 60:t]
             price_seq = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -161,7 +115,6 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
             current_price = arr[t, 3]
             next_price = arr[t + 1, 3]
 
-            # Trading logic (same as BC)
             is_new = (action > trade_threshold and position < 0.01)
             is_close = (action < trade_threshold and position > 0.01)
 
@@ -183,7 +136,6 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
                     portfolio *= (1 - cost)
                 position = action
 
-            # Apply return
             if position > 0.01:
                 ret = (next_price - current_price) / current_price if current_price > 0 else 0
                 portfolio *= (1 + ret * position)
@@ -191,10 +143,9 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
         portfolio_values.append(portfolio)
         all_actions.append(position)
 
-    # Results
     returns = [v - 1.0 for v in portfolio_values]
     print("\n" + "=" * 50)
-    print("E2E v3 Backtest Results")
+    print("E2E v3 BC Warm-Start Backtest Results")
     print("=" * 50)
     print(f"Total Return:     {np.mean(returns)*100:.2f}%")
     print(f"Std of Return:   {np.std(returns)*100:.2f}%")
@@ -207,7 +158,8 @@ def backtest_e2e_v3(checkpoint_path, test_symbols_start=200, test_symbols_end=25
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default="models/e2e_v3.pt")
+    parser.add_argument("--checkpoint", type=str, default="models/e2e_v3_bc_warmup.pt")
+    parser.add_argument("--bc-pretrained", type=str, default="models/bc_pretrain.pt")
     args = parser.parse_args()
 
-    backtest_e2e_v3(args.checkpoint)
+    backtest_e2e_v3_bc_warmup(args.checkpoint, args.bc_pretrained)
