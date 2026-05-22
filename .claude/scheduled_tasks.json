@@ -15,6 +15,15 @@
       "createdAt": 1776093932445,
       "lastFiredAt": 1776238500816,
       "recurring": true
+    },
+    {
+      "id": "6fe1b104",
+      "cron": "0 9 * * 1-5",
+      "prompt": "在 WSL Ubuntu (fin conda环境) 中执行以下步骤：\n\n1. 更新行情数据：\n```\ncd /mnt/d/Projects/auto-select-stock\nsource ~/miniconda3/etc/profile.d/conda.sh\nconda activate fin\nPYTHONPATH=./src python -m auto_select_stock.cli update-daily\n```\n\n2. 运行 Market Regime (Binary Filter) 回测：\n```\nPYTHONPATH=./src python -m auto_select_stock.rl.market_regime_backtest \\\n    --checkpoint models/bc_pretrain.pt \\\n    --test-symbols 200 \\\n    --regime-symbols 300 \\\n    --start 2024-01-01\n```\n\n3. 检查 git status 并 push：\n```\ngit add -A\nif git diff --cached --quiet; then\n    echo \"No changes\"\nelse\n    git commit -m \"chore(auto): daily market regime backtest $(date +%Y-%m-%d)\"\n    git push || echo \"push failed, skip\"\nfi\n```\n\n返回回测结果摘要（Return, Sharpe, Regime分布）和推送状态。",
+      "createdAt": 1779411711557,
+      "recurring": true,
+      "createdBySessionId": "6ee49062-c7cd-498d-80a8-4469313a0f98",
+      "createdByPid": 29912
     }
   ]
 }
